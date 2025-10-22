@@ -1,0 +1,6 @@
+bin/
+*.out
+*.prof
+.DS_Store
+vendor/
+*.log

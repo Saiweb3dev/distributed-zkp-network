@@ -24,11 +24,11 @@ WORKER := worker
 CLI := zkp-cli
 
 # Colors for output
-COLOR_RESET := \033[0m
-COLOR_BOLD := \033[1m
-COLOR_GREEN := \033[32m
-COLOR_YELLOW := \033[33m
-COLOR_BLUE := \033[34m
+COLOR_RESET :=
+COLOR_BOLD :=
+COLOR_GREEN :=
+COLOR_YELLOW :=
+COLOR_BLUE :=
 
 ## help: Display this help message
 help:
