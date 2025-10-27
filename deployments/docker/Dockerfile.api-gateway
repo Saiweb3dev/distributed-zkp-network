@@ -1,0 +1,74 @@
+# Multi-stage build for minimal final image
+
+# ============================================================================
+# Stage 1: Builder - Compile the Go application
+# ============================================================================
+FROM golang:1.22-alpine AS builder
+
+# Install build dependencies
+# git: for go mod download
+# make: for build automation
+# gcc/musl-dev: for CGO (gnark might need it)
+RUN apk add --no-cache git make gcc musl-dev
+
+# Set working directory
+WORKDIR /build
+
+# Copy go mod files first (layer caching optimization)
+# If go.mod/go.sum don't change, this layer is cached
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the application
+# CGO_ENABLED=0: static binary (no libc dependency)
+# -ldflags: inject version info
+# -trimpath: reproducible builds
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+    -ldflags="-s -w -X main.version=$(git describe --tags --always) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.gitCommit=$(git rev-parse HEAD)" \
+    -trimpath \
+    -o /build/bin/api-gateway \
+    ./cmd/api-gateway
+
+# ============================================================================
+# Stage 2: Final - Minimal runtime image
+# ============================================================================
+FROM alpine:3.18
+
+# Install runtime dependencies
+# ca-certificates: for HTTPS requests
+# tzdata: for timezone support
+RUN apk add --no-cache ca-certificates tzdata
+
+# Create non-root user for security
+# Running as root in containers is bad practice
+RUN addgroup -g 1000 zkp && \
+    adduser -D -u 1000 -G zkp zkp
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/bin/api-gateway /app/api-gateway
+
+# Copy config file
+COPY configs/api-gateway.yaml /app/configs/api-gateway.yaml
+
+# Set ownership
+RUN chown -R zkp:zkp /app
+
+# Switch to non-root user
+USER zkp
+
+# Expose ports
+EXPOSE 8080 9090
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
+
+# Run the application
+ENTRYPOINT ["/app/api-gateway"]
+CMD ["--config", "/app/configs/api-gateway.yaml"]
