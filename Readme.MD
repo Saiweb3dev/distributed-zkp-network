@@ -3,8 +3,6 @@
 ## Project Overview
 A production-grade distributed system for generating and verifying zero-knowledge proofs with horizontal scalability, consensus mechanisms, and comprehensive observability.
 
-**Learning Focus**: Golang concurrency, distributed systems patterns, DevOps infrastructure, and ZKP cryptography.
-
 ---
 
 ## Architecture Layers
@@ -45,7 +43,7 @@ A production-grade distributed system for generating and verifying zero-knowledg
 ## Project Structure
 
 ```
-zkp-distributed-network/
+distributed-zkp-network/
 │
 ├── cmd/                                    # Application entry points
 │   ├── api-gateway/
@@ -281,7 +279,7 @@ zkp-distributed-network/
 
 ```bash
 # Initialize Go module
-go mod init github.com/yourusername/zkp-distributed-network
+go mod init github.com/saiweb3dev/zkp-distributed-network
 
 # Install core dependencies
 go get -u google.golang.org/grpc
@@ -328,190 +326,6 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - **Orchestration**: Kubernetes
 - **IaC**: Terraform
 - **CI/CD**: GitHub Actions
-
----
-
-## Development Workflow
-
-### 1. Local Development
-```bash
-# Start dependencies
-make dev-up
-
-# Run API Gateway
-make run-api-gateway
-
-# Run Coordinator (3 nodes for Raft quorum)
-make run-coordinator-1
-make run-coordinator-2
-make run-coordinator-3
-
-# Run Workers
-make run-worker
-```
-
-### 2. Testing
-```bash
-# Unit tests
-make test-unit
-
-# Integration tests
-make test-integration
-
-# E2E tests
-make test-e2e
-
-# Coverage
-make test-coverage
-```
-
-### 3. Building
-```bash
-# Build all services
-make build
-
-# Build Docker images
-make docker-build
-
-# Push to registry
-make docker-push
-```
-
----
-
-## Learning Path
-
-### Phase 1: Foundations (Weeks 1-2)
-- [ ] Project structure setup
-- [ ] Basic HTTP API gateway
-- [ ] Simple ZKP generation with gnark
-- [ ] PostgreSQL integration
-- [ ] Unit testing framework
-
-### Phase 2: Concurrency (Weeks 3-4)
-- [ ] Worker pool implementation
-- [ ] Channel-based communication
-- [ ] Context for cancellation
-- [ ] Goroutine coordination
-- [ ] Fan-out/fan-in patterns
-
-### Phase 3: Distributed Systems (Weeks 5-7)
-- [ ] Raft consensus implementation
-- [ ] Leader election
-- [ ] Distributed task scheduling
-- [ ] Heartbeat protocol
-- [ ] Failure detection and recovery
-
-### Phase 4: Production Patterns (Weeks 8-9)
-- [ ] Circuit breaker
-- [ ] Retry with exponential backoff
-- [ ] Graceful shutdown
-- [ ] Configuration management
-- [ ] Error handling patterns
-
-### Phase 5: DevOps (Weeks 10-12)
-- [ ] Dockerfile optimization
-- [ ] Kubernetes deployment
-- [ ] Helm charts
-- [ ] Prometheus metrics
-- [ ] Grafana dashboards
-- [ ] CI/CD pipeline
-
----
-
-## Configuration Example
-
-### `configs/coordinator.yaml`
-```yaml
-server:
-  grpc_port: 9090
-  http_port: 8080
-  
-raft:
-  node_id: "coord-1"
-  bind_addr: "0.0.0.0:7000"
-  peers:
-    - "coord-1:7000"
-    - "coord-2:7000"
-    - "coord-3:7000"
-  data_dir: "/var/lib/zkp/raft"
-  
-scheduler:
-  max_concurrent_tasks: 100
-  task_timeout: 300s
-  
-database:
-  host: "postgres"
-  port: 5432
-  database: "zkp_network"
-  user: "zkp_user"
-  
-redis:
-  addr: "redis:6379"
-  db: 0
-  
-observability:
-  prometheus_port: 9091
-  jaeger_endpoint: "http://jaeger:14268/api/traces"
-  log_level: "info"
-```
-
----
-
-## API Examples
-
-### Submit Proof Generation Request
-```bash
-curl -X POST http://localhost:8080/api/v1/proofs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "circuit_type": "merkle_proof",
-    "inputs": {
-      "leaf": "0x123...",
-      "path": ["0x456...", "0x789..."]
-    },
-    "priority": "normal"
-  }'
-```
-
-Response:
-```json
-{
-  "task_id": "task_abc123",
-  "status": "pending",
-  "submitted_at": "2025-10-22T10:30:00Z"
-}
-```
-
-### Check Proof Status
-```bash
-curl http://localhost:8080/api/v1/proofs/task_abc123
-```
-
----
-
-## Next Steps
-
-1. **Set up the project structure** using the layout above
-2. **Create initial configurations** in `configs/`
-3. **Implement API Gateway** with basic handlers
-4. **Build ZKP module** with gnark integration
-5. **Add PostgreSQL** for task persistence
-6. **Implement worker pool** with concurrency patterns
-7. **Add Raft consensus** to coordinators
-8. **Set up observability** stack
-9. **Containerize** all services
-10. **Deploy to Kubernetes**
-
----
-
-## Resources
-
-- [gnark Documentation](https://docs.gnark.consensys.net/)
-- [Raft Consensus](https://raft.github.io/)
-- [Go Concurrency Patterns](https://go.dev/blog/pipelines)
-- [Kubernetes Best Practices](https://kubernetes.io/docs/concepts/)
-- [Prometheus Monitoring](https://prometheus.io/docs/introduction/overview/)
 
 ---
 
