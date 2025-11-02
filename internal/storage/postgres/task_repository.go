@@ -55,9 +55,9 @@ type taskRepository struct {
 
 // DatabaseConfig holds connection pool configuration
 type DatabaseConfig struct {
-    MaxOpenConns    int
-    MaxIdleConns    int
-    ConnMaxLifetime time.Duration
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
 }
 
 // NewTaskRepository creates a repository instance
@@ -80,15 +80,15 @@ func (r *taskRepository) CreateTask(ctx context.Context, task *Task) error {
 	}
 
 	log.Printf("Task after marshal Body: %+v", string(inputJSON))
-	
+
 	// Generate UUID if not provided
 	if task.ID == "" {
 		task.ID = uuid.New().String()
 	}
-	
+
 	task.CreatedAt = time.Now()
 	task.Status = "pending"
-	
+
 	_, err = r.db.ExecContext(
 		ctx,
 		query,
@@ -100,11 +100,11 @@ func (r *taskRepository) CreateTask(ctx context.Context, task *Task) error {
 		task.MaxRetries,
 		task.CreatedAt,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to insert task: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -118,12 +118,12 @@ func (r *taskRepository) GetTask(ctx context.Context, taskID string) (*Task, err
 		FROM tasks
 		WHERE id = $1
 	`
-	
+
 	task := &Task{}
 	var inputJSON, metadataJSON []byte
 	var workerID, errorMessage, merkleRoot sql.NullString
 	var assignedAt, startedAt, completedAt sql.NullTime
-	
+
 	err := r.db.QueryRowContext(ctx, query, taskID).Scan(
 		&task.ID,
 		&task.CircuitType,
@@ -141,25 +141,25 @@ func (r *taskRepository) GetTask(ctx context.Context, taskID string) (*Task, err
 		&task.RetryCount,
 		&task.MaxRetries,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("task not found: %s", taskID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query task: %w", err)
 	}
-	
+
 	// Unmarshal JSON fields
 	if err := json.Unmarshal(inputJSON, &task.InputData); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal input_data: %w", err)
 	}
-	
+
 	if metadataJSON != nil {
 		if err := json.Unmarshal(metadataJSON, &task.ProofMetadata); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal proof_metadata: %w", err)
 		}
 	}
-	
+
 	// Handle nullable fields
 	if workerID.Valid {
 		task.WorkerID = workerID.String
@@ -179,7 +179,7 @@ func (r *taskRepository) GetTask(ctx context.Context, taskID string) (*Task, err
 	if completedAt.Valid {
 		task.CompletedAt = completedAt.Time
 	}
-	
+
 	return task, nil
 }
 
@@ -192,31 +192,31 @@ func (r *taskRepository) GetPendingTasks(ctx context.Context, limit int) ([]*Tas
 		ORDER BY created_at ASC
 		LIMIT $1
 	`
-	
+
 	rows, err := r.db.QueryContext(ctx, query, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pending tasks: %w", err)
 	}
 	defer rows.Close()
-	
+
 	tasks := make([]*Task, 0)
-	
+
 	for rows.Next() {
 		task := &Task{}
 		var inputJSON []byte
-		
+
 		if err := rows.Scan(&task.ID, &task.CircuitType, &inputJSON, &task.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan task row: %w", err)
 		}
-		
+
 		if err := json.Unmarshal(inputJSON, &task.InputData); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal input_data: %w", err)
 		}
-		
+
 		task.Status = "pending"
 		tasks = append(tasks, task)
 	}
-	
+
 	return tasks, nil
 }
 
@@ -229,44 +229,44 @@ func (r *taskRepository) GetStaleTasks(ctx context.Context, staleThreshold time.
 		AND started_at < $1
 		ORDER BY started_at ASC
 	`
-	
+
 	cutoff := time.Now().Add(-staleThreshold)
-	
+
 	rows, err := r.db.QueryContext(ctx, query, cutoff)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query stale tasks: %w", err)
 	}
 	defer rows.Close()
-	
+
 	tasks := make([]*Task, 0)
-	
+
 	for rows.Next() {
 		task := &Task{}
 		if err := rows.Scan(&task.ID, &task.WorkerID, &task.StartedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan stale task: %w", err)
 		}
-		
+
 		task.Status = "in_progress"
 		tasks = append(tasks, task)
 	}
-	
+
 	return tasks, nil
 }
 
 // AssignTask atomically assigns a task to a worker using the database function
 func (r *taskRepository) AssignTask(ctx context.Context, taskID, workerID string) error {
 	query := `SELECT assign_task_to_worker($1, $2)`
-	
+
 	var success bool
 	err := r.db.QueryRowContext(ctx, query, taskID, workerID).Scan(&success)
 	if err != nil {
 		return fmt.Errorf("failed to assign task: %w", err)
 	}
-	
+
 	if !success {
 		return fmt.Errorf("task assignment failed (task may not be pending)")
 	}
-	
+
 	return nil
 }
 
@@ -277,29 +277,29 @@ func (r *taskRepository) UnassignTask(ctx context.Context, taskID string) error 
 		SET status = 'pending', worker_id = NULL, assigned_at = NULL
 		WHERE id = $1 AND status = 'assigned'
 	`
-	
+
 	result, err := r.db.ExecContext(ctx, query, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to unassign task: %w", err)
 	}
-	
+
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("task not found or not in assigned status")
 	}
-	
+
 	return nil
 }
 
 // UpdateTaskStatus changes a task's status
 func (r *taskRepository) UpdateTaskStatus(ctx context.Context, taskID, status string) error {
 	query := `UPDATE tasks SET status = $1 WHERE id = $2`
-	
+
 	_, err := r.db.ExecContext(ctx, query, status, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to update task status: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -312,13 +312,13 @@ func (r *taskRepository) CompleteTask(
 	merkleRoot string,
 ) error {
 	query := `SELECT complete_task($1, $2, $3, $4)`
-	
+
 	// Marshal metadata to JSON
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
 	}
-	
+
 	var success bool
 	err = r.db.QueryRowContext(
 		ctx,
@@ -328,32 +328,32 @@ func (r *taskRepository) CompleteTask(
 		metadataJSON,
 		sql.NullString{String: merkleRoot, Valid: merkleRoot != ""},
 	).Scan(&success)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to complete task: %w", err)
 	}
-	
+
 	if !success {
 		return fmt.Errorf("task completion failed (task may not be in_progress)")
 	}
-	
+
 	return nil
 }
 
 // FailTask marks a task as failed using the database function
 func (r *taskRepository) FailTask(ctx context.Context, taskID, errorMessage string) error {
 	query := `SELECT fail_task($1, $2)`
-	
+
 	var success bool
 	err := r.db.QueryRowContext(ctx, query, taskID, errorMessage).Scan(&success)
 	if err != nil {
 		return fmt.Errorf("failed to mark task as failed: %w", err)
 	}
-	
+
 	if !success {
 		return fmt.Errorf("task failure marking failed")
 	}
-	
+
 	return nil
 }
 
@@ -369,17 +369,17 @@ func (r *taskRepository) ResetTaskToPending(ctx context.Context, taskID string) 
 			retry_count = retry_count + 1
 		WHERE id = $1 AND status = 'in_progress'
 	`
-	
+
 	result, err := r.db.ExecContext(ctx, query, taskID)
 	if err != nil {
 		return fmt.Errorf("failed to reset task: %w", err)
 	}
-	
+
 	rows, _ := result.RowsAffected()
 	if rows == 0 {
 		return fmt.Errorf("task not found or not in_progress")
 	}
-	
+
 	return nil
 }
 
@@ -432,12 +432,12 @@ func (r *workerRepository) CreateWorker(ctx context.Context, worker *WorkerInfo)
 			last_heartbeat_at = EXCLUDED.last_heartbeat_at,
 			status = 'active'
 	`
-	
+
 	capJSON, err := json.Marshal(worker.Capabilities)
 	if err != nil {
 		return fmt.Errorf("failed to marshal capabilities: %w", err)
 	}
-	
+
 	_, err = r.db.ExecContext(
 		ctx,
 		query,
@@ -449,11 +449,11 @@ func (r *workerRepository) CreateWorker(ctx context.Context, worker *WorkerInfo)
 		time.Now(),
 		capJSON,
 	)
-	
+
 	if err != nil {
 		return fmt.Errorf("failed to insert worker: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -466,10 +466,10 @@ func (r *workerRepository) GetWorker(ctx context.Context, workerID string) (*Wor
 		FROM workers
 		WHERE id = $1
 	`
-	
+
 	worker := &WorkerInfo{}
 	var capJSON []byte
-	
+
 	err := r.db.QueryRowContext(ctx, query, workerID).Scan(
 		&worker.ID,
 		&worker.Address,
@@ -480,20 +480,20 @@ func (r *workerRepository) GetWorker(ctx context.Context, workerID string) (*Wor
 		&worker.RegisteredAt,
 		&capJSON,
 	)
-	
+
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("worker not found: %s", workerID)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to query worker: %w", err)
 	}
-	
+
 	if capJSON != nil {
 		if err := json.Unmarshal(capJSON, &worker.Capabilities); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal capabilities: %w", err)
 		}
 	}
-	
+
 	return worker, nil
 }
 
@@ -507,15 +507,15 @@ func (r *workerRepository) GetActiveWorkers(ctx context.Context) ([]*WorkerInfo,
 		WHERE status = 'active'
 		ORDER BY registered_at ASC
 	`
-	
+
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query active workers: %w", err)
 	}
 	defer rows.Close()
-	
+
 	workers := make([]*WorkerInfo, 0)
-	
+
 	for rows.Next() {
 		worker := &WorkerInfo{}
 		if err := rows.Scan(
@@ -529,10 +529,10 @@ func (r *workerRepository) GetActiveWorkers(ctx context.Context) ([]*WorkerInfo,
 		); err != nil {
 			return nil, fmt.Errorf("failed to scan worker row: %w", err)
 		}
-		
+
 		workers = append(workers, worker)
 	}
-	
+
 	return workers, nil
 }
 
@@ -543,12 +543,12 @@ func (r *workerRepository) UpdateHeartbeat(ctx context.Context, workerID string)
 		SET last_heartbeat_at = $1
 		WHERE id = $2
 	`
-	
+
 	_, err := r.db.ExecContext(ctx, query, time.Now(), workerID)
 	if err != nil {
 		return fmt.Errorf("failed to update heartbeat: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -559,12 +559,12 @@ func (r *workerRepository) IncrementTaskCount(ctx context.Context, workerID stri
 		SET current_task_count = current_task_count + 1
 		WHERE id = $1
 	`
-	
+
 	_, err := r.db.ExecContext(ctx, query, workerID)
 	if err != nil {
 		return fmt.Errorf("failed to increment task count: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -575,12 +575,12 @@ func (r *workerRepository) DecrementTaskCount(ctx context.Context, workerID stri
 		SET current_task_count = GREATEST(current_task_count - 1, 0)
 		WHERE id = $1
 	`
-	
+
 	_, err := r.db.ExecContext(ctx, query, workerID)
 	if err != nil {
 		return fmt.Errorf("failed to decrement task count: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -591,12 +591,12 @@ func (r *workerRepository) MarkWorkerDead(ctx context.Context, workerID string) 
 		SET status = 'dead'
 		WHERE id = $1
 	`
-	
+
 	_, err := r.db.ExecContext(ctx, query, workerID)
 	if err != nil {
 		return fmt.Errorf("failed to mark worker dead: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -605,34 +605,42 @@ func (r *workerRepository) MarkWorkerDead(ctx context.Context, workerID string) 
 // ============================================================================
 
 // ConnectPostgreSQL establishes a connection to PostgreSQL
-func ConnectPostgreSQL(connString string,  cfg *DatabaseConfig) (*sql.DB, error) {
+func ConnectPostgreSQL(connString string, cfg *DatabaseConfig) (*sql.DB, error) {
 	log.Printf("Test Log Connecting to PostgreSQL: %s", connString)
 	db, err := sql.Open("postgres", connString)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
-	
-	    // Configure connection pool (do it once here, not in main)
-    if cfg != nil {
-        db.SetMaxOpenConns(cfg.MaxOpenConns)
-        db.SetMaxIdleConns(cfg.MaxIdleConns)
-        db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
-    } else {
-        // Sensible defaults if no config provided
-        db.SetMaxOpenConns(25)
-        db.SetMaxIdleConns(5)
-        db.SetConnMaxLifetime(5 * time.Minute)
-    }
-	
+
+	// Configure connection pool (do it once here, not in main)
+	if cfg != nil {
+		db.SetMaxOpenConns(cfg.MaxOpenConns)
+		db.SetMaxIdleConns(cfg.MaxIdleConns)
+		db.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	} else {
+		// Sensible defaults if no config provided
+		db.SetMaxOpenConns(25)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(5 * time.Minute)
+	}
+
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := db.PingContext(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
-	
+
 	return db, nil
+}
+
+// TaskResult holds the results of a completed task
+type TaskResult struct {
+	ProofData     []byte
+	ProofMetadata string
+	MerkleRoot    string
+	DurationMs    int64
 }
 
 // RunMigrations executes SQL migration files

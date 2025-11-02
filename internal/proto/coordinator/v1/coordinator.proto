@@ -1,0 +1,102 @@
+// internal/proto/coordinator/coordinator.proto
+// Protocol Buffers definition for worker-coordinator communication
+
+syntax = "proto3";
+
+package coordinator;
+
+option go_package = "github.com/saiweb3dev/distributed-zkp-network/internal/proto/coordinator";
+
+// CoordinatorService defines the gRPC API for workers to communicate with coordinators
+service CoordinatorService {
+    // Worker registration - called once when worker starts
+    rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+    
+    // Heartbeat - called every 5 seconds to signal worker is alive
+    rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    
+    // Report task completion - called when proof generation succeeds
+    rpc ReportCompletion(TaskCompletionRequest) returns (TaskCompletionResponse);
+    
+    // Report task failure - called when proof generation fails
+    rpc ReportFailure(TaskFailureRequest) returns (TaskFailureResponse);
+    
+    // Receive tasks - server-streaming RPC where coordinator pushes tasks to worker
+    rpc ReceiveTasks(ReceiveTasksRequest) returns (stream TaskAssignment);
+}
+
+// ============================================================================
+// Worker Registration
+// ============================================================================
+
+message RegisterWorkerRequest {
+    string worker_id = 1;
+    int32 max_concurrent_tasks = 2;
+    map<string, string> capabilities = 3;  // e.g., {"circuits": "merkle,range,addition"}
+}
+
+message RegisterWorkerResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ============================================================================
+// Heartbeat
+// ============================================================================
+
+message HeartbeatRequest {
+    string worker_id = 1;
+    int64 timestamp = 2;  // Unix timestamp
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+}
+
+// ============================================================================
+// Task Assignment (coordinator → worker)
+// ============================================================================
+
+message ReceiveTasksRequest {
+    string worker_id = 1;
+}
+
+message TaskAssignment {
+    string task_id = 1;
+    string circuit_type = 2;  // "merkle_proof", "range_proof", etc.
+    bytes input_data_json = 3;  // JSON-encoded input data
+    int64 created_at = 4;  // Unix timestamp
+}
+
+// ============================================================================
+// Task Completion
+// ============================================================================
+
+message TaskCompletionRequest {
+    string task_id = 1;
+    string worker_id = 2;
+    bytes proof_data = 3;  // Serialized gnark proof
+    bytes proof_metadata_json = 4;  // JSON-encoded metadata
+    string merkle_root = 5;  // Optional, for Merkle proofs
+    int64 duration_ms = 6;  // How long proof took to generate
+}
+
+message TaskCompletionResponse {
+    bool success = 1;
+    string message = 2;
+}
+
+// ============================================================================
+// Task Failure
+// ============================================================================
+
+message TaskFailureRequest {
+    string task_id = 1;
+    string worker_id = 2;
+    string error_message = 3;
+}
+
+message TaskFailureResponse {
+    bool success = 1;
+    string message = 2;
+}

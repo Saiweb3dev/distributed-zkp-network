@@ -1,0 +1,32 @@
+# Coordinator Configuration - Local Development
+# Use this for local development without Docker
+
+coordinator:
+  id: "coordinator-local"
+  grpc_port: 9090
+  http_port: 8090
+  poll_interval: 2s
+  heartbeat_timeout: 30s
+  stale_task_timeout: 5m
+  cleanup_interval: 1m
+
+database:
+  host: "localhost"     # Local PostgreSQL
+  port: 5432
+  database: "zkp_network"
+  user: "postgres"
+  password: "postgres"
+  ssl_mode: "disable"
+  max_open_conns: 10
+  max_idle_conns: 2
+  conn_max_lifetime: 5m
+
+logging:
+  level: "debug"        # Verbose logging for development
+  format: "console"     # Human-readable format
+  output: "stdout"
+
+metrics:
+  enabled: true
+  port: 9091
+  path: "/metrics"
