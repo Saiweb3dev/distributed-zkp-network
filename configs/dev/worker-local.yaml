@@ -1,0 +1,32 @@
+# Worker Node Configuration - Local Development
+# Use this for local development without Docker
+
+worker:
+  id: "worker-1"
+  
+  # Local coordinator address (not Docker service name)
+  coordinator_address: "localhost:9090"
+  
+  # Lower concurrency for local testing
+  concurrency: 2
+  
+  heartbeat_interval: 5s
+  register_retries: 3
+  task_timeout: 5m
+
+logging:
+  level: "debug"       # Verbose logging for development
+  format: "console"    # Human-readable format
+  output: "stdout"
+
+metrics:
+  enabled: true
+  port: 9091
+  path: "/metrics"
+
+zkp:
+  curve: "bn254"
+  backend: "groth16"
+  compile_cache_size: 20    # Lower for local dev
+  max_proof_size_mb: 10
+  merkle_tree_depth: 8

@@ -1,7 +1,90 @@
 # Distributed Zero-Knowledge Proof Verification Network
 
 ## Project Overview
+
 A production-grade distributed system for generating and verifying zero-knowledge proofs with horizontal scalability, consensus mechanisms, and comprehensive observability.
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+
+- **Docker** (for PostgreSQL)
+- **Go 1.21+** (for running services)
+- **Windows Terminal** (recommended) or any terminal emulator
+
+### Start All Services (Automated)
+
+```bash
+# Windows
+start-services.bat
+
+# Linux/Mac
+chmod +x start-services.sh test-services.sh stop-services.sh
+./start-services.sh
+```
+
+This automatically:
+
+- ✅ Starts PostgreSQL in Docker
+- ✅ Runs database migrations
+- ✅ Launches Coordinator (port 9090 gRPC, 8090 HTTP)
+- ✅ Launches 2 Worker nodes
+- ✅ Launches API Gateway (port 8080)
+
+### Test the System
+
+```bash
+# Windows
+test-services.bat
+
+# Linux/Mac
+./test-services.sh
+```
+
+Runs 10 comprehensive tests including:
+
+- Health checks
+- Merkle proof submission
+- Task status monitoring
+- Load testing
+
+### Stop All Services
+
+```bash
+# Windows
+stop-services.bat
+
+# Linux/Mac
+./stop-services.sh
+```
+
+### Manual Testing
+
+```bash
+# Submit a Merkle proof task
+curl -X POST http://localhost:8080/api/v1/tasks/merkle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "leaves": [
+      "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+    ],
+    "leaf_index": 0
+  }'
+
+# Check task status (replace TASK_ID)
+curl http://localhost:8080/api/v1/tasks/TASK_ID
+
+# View coordinator health
+curl http://localhost:8090/health
+
+# View metrics
+curl http://localhost:8090/metrics
+```
+
+📖 **For detailed script documentation, see [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md)**
 
 ---
 
@@ -305,23 +388,27 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 ## Key Technologies
 
 ### Core
+
 - **Language**: Go 1.22+
 - **ZKP Library**: gnark (consensys)
 - **Consensus**: Raft (HashiCorp)
 - **API**: gRPC + HTTP/2
 
 ### Data Layer
+
 - **Primary DB**: PostgreSQL 15+
 - **Cache**: Redis 7+
 - **Blockchain**: Custom file-based chain
 
 ### Observability
+
 - **Metrics**: Prometheus
 - **Visualization**: Grafana
 - **Tracing**: Jaeger
 - **Logging**: Zap/Zerolog + ELK
 
 ### Infrastructure
+
 - **Containers**: Docker
 - **Orchestration**: Kubernetes
 - **IaC**: Terraform

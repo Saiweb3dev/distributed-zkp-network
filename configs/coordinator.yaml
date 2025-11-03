@@ -1,0 +1,45 @@
+# Coordinator Configuration
+# The coordinator manages task distribution and worker health monitoring
+
+coordinator:
+  # Unique identifier for this coordinator node
+  id: "coordinator-1"
+  
+  # gRPC server port for worker connections
+  grpc_port: 9090
+  
+  # HTTP API port for health checks and metrics
+  http_port: 8090
+  
+  # How often to poll database for pending tasks
+  poll_interval: 2s
+  
+  # Time to wait before marking worker as suspect (no heartbeat)
+  heartbeat_timeout: 30s
+  
+  # Time to wait before reassigning in-progress tasks
+  stale_task_timeout: 5m
+  
+  # How often to cleanup dead workers
+  cleanup_interval: 1m
+
+database:
+  host: "postgres"      # Docker service name, use "localhost" for local dev
+  port: 5432
+  database: "zkp_network"
+  user: "postgres"
+  password: "postgres"
+  ssl_mode: "disable"
+  max_open_conns: 25
+  max_idle_conns: 5
+  conn_max_lifetime: 5m
+
+logging:
+  level: "info"         # debug, info, warn, error
+  format: "json"        # json or console
+  output: "stdout"
+
+metrics:
+  enabled: true
+  port: 9091           # Prometheus metrics port
+  path: "/metrics"
