@@ -448,11 +448,7 @@ func (wr *WorkerRegistry) loadWorkersFromDB() error {
 	wr.logger.Info("Loaded workers from database",
 		zap.Int("count", len(workers)),
 	)
-
-	//TODO: gRPC connections should be enabled here
-	// Workers will reconnect and re-register themselves
-	// We don't attempt to restore gRPC connections here
-
+	
 	return nil
 }
 
