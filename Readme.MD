@@ -5,6 +5,81 @@ A production-grade distributed system for generating and verifying zero-knowledg
 
 ---
 
+## 🚀 Quick Start
+
+### Prerequisites
+- **Docker** (for PostgreSQL)
+- **Go 1.21+** (for running services)
+- **Windows Terminal** (recommended) or any terminal emulator
+
+### Start All Services (Automated)
+```bash
+# Windows
+start-services.bat
+
+# Linux/Mac
+chmod +x start-services.sh test-services.sh stop-services.sh
+./start-services.sh
+```
+
+This automatically:
+- ✅ Starts PostgreSQL in Docker
+- ✅ Runs database migrations
+- ✅ Launches Coordinator (port 9090 gRPC, 8090 HTTP)
+- ✅ Launches 2 Worker nodes
+- ✅ Launches API Gateway (port 8080)
+
+### Test the System
+```bash
+# Windows
+test-services.bat
+
+# Linux/Mac
+./test-services.sh
+```
+
+Runs 10 comprehensive tests including:
+- Health checks
+- Merkle proof submission
+- Task status monitoring
+- Load testing
+
+### Stop All Services
+```bash
+# Windows
+stop-services.bat
+
+# Linux/Mac
+./stop-services.sh
+```
+
+### Manual Testing
+```bash
+# Submit a Merkle proof task
+curl -X POST http://localhost:8080/api/v1/tasks/merkle \
+  -H "Content-Type: application/json" \
+  -d '{
+    "leaves": [
+      "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+      "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
+    ],
+    "leaf_index": 0
+  }'
+
+# Check task status (replace TASK_ID)
+curl http://localhost:8080/api/v1/tasks/TASK_ID
+
+# View coordinator health
+curl http://localhost:8090/health
+
+# View metrics
+curl http://localhost:8090/metrics
+```
+
+📖 **For detailed script documentation, see [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md)**
+
+---
+
 ## Architecture Layers
 
 ```
