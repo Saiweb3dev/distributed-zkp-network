@@ -1,0 +1,55 @@
+# Worker Node Configuration
+# This configuration is for a single worker node that connects to the coordinator
+
+worker:
+  # Unique identifier for this worker node
+  # Should be unique across all workers in the cluster
+  id: "worker-1"
+  
+  # Coordinator gRPC address to connect to
+  # In Docker: use service name (e.g., "coordinator:9090")
+  # Local dev: use "localhost:9090"
+  coordinator_address: "coordinator:9090"
+  
+  # Maximum number of concurrent proof generation tasks
+  # Higher = more throughput but requires more CPU/memory
+  # Recommended: number of CPU cores
+  concurrency: 4
+  
+  # How often to send heartbeat to coordinator (keep-alive)
+  # Lower = faster failure detection, higher = less network overhead
+  heartbeat_interval: 5s
+  
+  # Number of retries when registering with coordinator
+  register_retries: 3
+  
+  # Maximum time allowed for a single task
+  # Tasks exceeding this will be marked as failed
+  task_timeout: 5m
+
+logging:
+  level: "info"        # debug, info, warn, error
+  format: "json"       # json or console
+  output: "stdout"
+
+metrics:
+  enabled: true
+  port: 9091           # Prometheus metrics port
+  path: "/metrics"
+
+zkp:
+  # Elliptic curve for ZKP (must match coordinator/API gateway)
+  curve: "bn254"
+  
+  # Proof system backend
+  backend: "groth16"
+  
+  # Circuit compilation cache size
+  # Compilation is expensive, cache circuits for reuse
+  compile_cache_size: 50
+  
+  # Maximum allowed proof size in MB
+  max_proof_size_mb: 10
+  
+  # Default Merkle tree depth
+  merkle_tree_depth: 8
