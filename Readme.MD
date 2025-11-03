@@ -1,6 +1,7 @@
 # Distributed Zero-Knowledge Proof Verification Network
 
 ## Project Overview
+
 A production-grade distributed system for generating and verifying zero-knowledge proofs with horizontal scalability, consensus mechanisms, and comprehensive observability.
 
 ---
@@ -8,11 +9,13 @@ A production-grade distributed system for generating and verifying zero-knowledg
 ## 🚀 Quick Start
 
 ### Prerequisites
+
 - **Docker** (for PostgreSQL)
 - **Go 1.21+** (for running services)
 - **Windows Terminal** (recommended) or any terminal emulator
 
 ### Start All Services (Automated)
+
 ```bash
 # Windows
 start-services.bat
@@ -23,6 +26,7 @@ chmod +x start-services.sh test-services.sh stop-services.sh
 ```
 
 This automatically:
+
 - ✅ Starts PostgreSQL in Docker
 - ✅ Runs database migrations
 - ✅ Launches Coordinator (port 9090 gRPC, 8090 HTTP)
@@ -30,6 +34,7 @@ This automatically:
 - ✅ Launches API Gateway (port 8080)
 
 ### Test the System
+
 ```bash
 # Windows
 test-services.bat
@@ -39,12 +44,14 @@ test-services.bat
 ```
 
 Runs 10 comprehensive tests including:
+
 - Health checks
 - Merkle proof submission
 - Task status monitoring
 - Load testing
 
 ### Stop All Services
+
 ```bash
 # Windows
 stop-services.bat
@@ -54,6 +61,7 @@ stop-services.bat
 ```
 
 ### Manual Testing
+
 ```bash
 # Submit a Merkle proof task
 curl -X POST http://localhost:8080/api/v1/tasks/merkle \
@@ -380,23 +388,27 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 ## Key Technologies
 
 ### Core
+
 - **Language**: Go 1.22+
 - **ZKP Library**: gnark (consensys)
 - **Consensus**: Raft (HashiCorp)
 - **API**: gRPC + HTTP/2
 
 ### Data Layer
+
 - **Primary DB**: PostgreSQL 15+
 - **Cache**: Redis 7+
 - **Blockchain**: Custom file-based chain
 
 ### Observability
+
 - **Metrics**: Prometheus
 - **Visualization**: Grafana
 - **Tracing**: Jaeger
 - **Logging**: Zap/Zerolog + ELK
 
 ### Infrastructure
+
 - **Containers**: Docker
 - **Orchestration**: Kubernetes
 - **IaC**: Terraform
