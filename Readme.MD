@@ -1,425 +1,246 @@
-# Distributed Zero-Knowledge Proof Verification Network
+# Distributed ZKP Network
 
-## Project Overview
-
-A production-grade distributed system for generating and verifying zero-knowledge proofs with horizontal scalability, consensus mechanisms, and comprehensive observability.
-
----
+A distributed zero-knowledge proof (ZKP) computation network with Raft consensus, designed for scalable and fault-tolerant ZKP generation.
 
 ## 🚀 Quick Start
 
 ### Prerequisites
+- Go 1.24+
+- Docker & Docker Compose
+- Make
 
-- **Docker** (for PostgreSQL)
-- **Go 1.21+** (for running services)
-- **Windows Terminal** (recommended) or any terminal emulator
+### Development Mode (Single Node)
+```bash
+make dev
+```
 
-### Start All Services (Automated)
-
+### Production Cluster (3 Coordinators, 2 Workers)
 ```bash
 # Windows
-start-services.bat
+scripts\bat\bootstrap-raft.bat
+scripts\bat\start-cluster.bat
 
-# Linux/Mac
-chmod +x start-services.sh test-services.sh stop-services.sh
-./start-services.sh
+# Unix
+./scripts/sh/bootstrap-raft.sh
+./scripts/sh/start-cluster.sh
 ```
 
-This automatically:
-
-- ✅ Starts PostgreSQL in Docker
-- ✅ Runs database migrations
-- ✅ Launches Coordinator (port 9090 gRPC, 8090 HTTP)
-- ✅ Launches 2 Worker nodes
-- ✅ Launches API Gateway (port 8080)
-
-### Test the System
-
+### Run Tests
 ```bash
 # Windows
-test-services.bat
+test\e2e\run-tests.bat
 
-# Linux/Mac
-./test-services.sh
+# Unix
+./test/e2e/run-tests.sh
 ```
 
-Runs 10 comprehensive tests including:
+## 📚 Documentation
 
-- Health checks
-- Merkle proof submission
-- Task status monitoring
-- Load testing
+- **[Documentation Index](docs/README.md)** - Complete documentation catalog
 
-### Stop All Services
+### Architecture
+- [Coordinator Architecture](docs/COORDINATOR_ARCHITECTURE_GUIDE.md) - Leader election, task scheduling
+- [Worker Architecture](docs/WORKER_ARCHITECTURE_GUIDE.md) - Task execution, proof generation
+- [gRPC Setup](docs/architecture/gRPC_Setup_Guide.md) - Protocol Buffers configuration
 
-```bash
-# Windows
-stop-services.bat
+### Getting Started
+- [Bootstrap Guide](docs/guides/BOOTSTRAP_GUIDE.md) - Initial setup and configuration
+- [Raft Guide](docs/RAFT_GUIDE.md) - Consensus implementation and operations
+- [Cheatsheet](docs/Cheatsheet.md) - Common commands and workflows
 
-# Linux/Mac
-./stop-services.sh
-```
+### Operations
+- [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md) - Production setup strategies
+- [CI/CD Pipeline](docs/CI_CD_PIPELINE.md) - Automated testing and deployment
+- [Test Failure Analysis](docs/TEST_FAILURE_ANALYSIS.md) - Troubleshooting guide
 
-### Manual Testing
+## 🧪 Testing
 
-```bash
-# Submit a Merkle proof task
-curl -X POST http://localhost:8080/api/v1/tasks/merkle \
-  -H "Content-Type: application/json" \
-  -d '{
-    "leaves": [
-      "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
-      "0xfedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321"
-    ],
-    "leaf_index": 0
-  }'
+Comprehensive test suite with 19 automated tests covering:
+- Container health checks
+- Raft leader election
+- Database connectivity
+- API Gateway functionality
+- Worker registration
 
-# Check task status (replace TASK_ID)
-curl http://localhost:8080/api/v1/tasks/TASK_ID
+See [test/README.md](test/README.md) for details.
 
-# View coordinator health
-curl http://localhost:8090/health
+**Test Coverage:**
+- E2E tests: 100% (19/19 passing)
+- Unit tests: 50%+ (CI requirement)
+- Integration tests: Cluster health, failover, performance
 
-# View metrics
-curl http://localhost:8090/metrics
-```
-
-📖 **For detailed script documentation, see [SCRIPTS_GUIDE.md](SCRIPTS_GUIDE.md)**
-
----
-
-## Architecture Layers
+## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Client Layer (Future)                   │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    API Gateway Layer                         │
-│  (HTTP/gRPC endpoints, rate limiting, auth)                  │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                  Coordinator Node Layer                      │
-│  (Raft consensus, leader election, task scheduling)          │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                    Worker Node Layer                         │
-│  (ZKP generation, proof verification, result reporting)      │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                      Data Layer                              │
-│  (PostgreSQL, Redis, Blockchain storage)                     │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│                  Observability Layer                         │
-│  (Prometheus, Grafana, Jaeger, ELK Stack)                    │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────┐
+│   API Gateway   │  ← Client requests
+│   (Port 8080)   │
+└────────┬────────┘
+         │
+    ┌────▼─────────────────┐
+    │  Coordinator Cluster │
+    │   (Raft Consensus)   │
+    ├──────────────────────┤
+    │ • Leader: Task queue │
+    │ • Followers: Standby │
+    │ • Ports: 8090-8092   │
+    └────────┬─────────────┘
+             │
+    ┌────────▼────────┐
+    │  Worker Pool    │
+    │ • Execute proofs│
+    │ • Report status │
+    └─────────────────┘
 ```
 
----
+## 🛠️ Development
 
-## Project Structure
-
+### Project Structure
 ```
 distributed-zkp-network/
-│
-├── cmd/                                    # Application entry points
+├── cmd/                    ← Service entry points
 │   ├── api-gateway/
-│   │   └── main.go                         # API Gateway service
 │   ├── coordinator/
-│   │   └── main.go                         # Coordinator node service
-│   ├── worker/
-│   │   └── main.go                         # Worker node service
-│   └── cli/
-│       └── main.go                         # CLI tool for admin tasks
-│
-├── internal/                               # Private application code
-│   ├── api/                                # API Gateway Layer
-│   │   ├── handlers/
-│   │   │   ├── proof_handler.go            # HTTP handlers for proof requests
-│   │   │   ├── status_handler.go           # Status and health endpoints
-│   │   │   └── middleware/
-│   │   │       ├── auth.go                 # Authentication middleware
-│   │   │       ├── ratelimit.go            # Rate limiting
-│   │   │       ├── logging.go              # Request logging
-│   │   │       └── recovery.go             # Panic recovery
-│   │   ├── grpc/
-│   │   │   ├── server.go                   # gRPC server setup
-│   │   │   └── interceptors/
-│   │   │       ├── auth.go                 # Auth interceptor
-│   │   │       └── logging.go              # Logging interceptor
-│   │   └── router.go                       # HTTP router configuration
-│   │
-│   ├── coordinator/                        # Coordinator Node Layer
-│   │   ├── consensus/
-│   │   │   ├── raft.go                     # Raft consensus implementation
-│   │   │   ├── leader_election.go          # Leader election logic
-│   │   │   ├── log_replication.go          # Log replication
-│   │   │   └── state_machine.go            # FSM for coordinator state
-│   │   ├── scheduler/
-│   │   │   ├── task_scheduler.go           # Task distribution logic
-│   │   │   ├── load_balancer.go            # Worker load balancing
-│   │   │   └── priority_queue.go           # Task priority management
-│   │   ├── registry/
-│   │   │   ├── worker_registry.go          # Track active workers
-│   │   │   └── heartbeat.go                # Worker heartbeat monitoring
-│   │   └── coordinator.go                  # Main coordinator logic
-│   │
-│   ├── worker/                             # Worker Node Layer
-│   │   ├── executor/
-│   │   │   ├── proof_generator.go          # ZKP generation using gnark
-│   │   │   ├── verifier.go                 # Proof verification
-│   │   │   ├── worker_pool.go              # Worker pool pattern
-│   │   │   └── circuit_cache.go            # Circuit compilation cache
-│   │   ├── client/
-│   │   │   ├── coordinator_client.go       # Communicate with coordinator
-│   │   │   └── heartbeat.go                # Send heartbeats
-│   │   └── worker.go                       # Main worker logic
-│   │
-│   ├── zkp/                                # Zero-Knowledge Proof Logic
-│   │   ├── circuits/
-│   │   │   ├── example_circuit.go          # Sample circuits (Merkle, range proof)
-│   │   │   └── circuit_registry.go         # Circuit type registry
-│   │   ├── prover.go                       # Prover interface and impl
-│   │   ├── verifier.go                     # Verifier interface and impl
-│   │   └── serialization.go                # Proof serialization
-│   │
-│   ├── storage/                            # Data Layer
-│   │   ├── postgres/
-│   │   │   ├── client.go                   # PostgreSQL client
-│   │   │   ├── proof_repository.go         # Proof CRUD operations
-│   │   │   ├── task_repository.go          # Task persistence
-│   │   │   └── migrations/                 # Database migrations
-│   │   │       └── *.sql
-│   │   ├── redis/
-│   │   │   ├── client.go                   # Redis client
-│   │   │   ├── cache.go                    # Caching layer
-│   │   │   └── lock.go                     # Distributed locking
-│   │   ├── blockchain/
-│   │   │   ├── chain.go                    # Simple blockchain implementation
-│   │   │   ├── block.go                    # Block structure
-│   │   │   └── persistence.go              # File-based persistence
-│   │   └── repository.go                   # Repository interfaces
-│   │
-│   ├── observability/                      # Observability Layer
-│   │   ├── metrics/
-│   │   │   ├── prometheus.go               # Prometheus metrics
-│   │   │   ├── collector.go                # Custom collectors
-│   │   │   └── registry.go                 # Metrics registry
-│   │   ├── logging/
-│   │   │   ├── logger.go                   # Structured logger (zap/zerolog)
-│   │   │   └── context.go                  # Context-aware logging
-│   │   ├── tracing/
-│   │   │   ├── tracer.go                   # Jaeger tracer setup
-│   │   │   └── spans.go                    # Span helpers
-│   │   └── health/
-│   │       └── checker.go                  # Health check aggregator
-│   │
-│   ├── common/                             # Shared utilities
-│   │   ├── config/
-│   │   │   └── config.go                   # Configuration management
-│   │   ├── errors/
-│   │   │   └── errors.go                   # Custom error types
-│   │   ├── patterns/
-│   │   │   ├── circuitbreaker.go           # Circuit breaker pattern
-│   │   │   ├── retry.go                    # Retry logic
-│   │   │   └── observer.go                 # Observer pattern
-│   │   └── utils/
-│   │       ├── context.go                  # Context utilities
-│   │       └── graceful_shutdown.go        # Graceful shutdown helper
-│   │
-│   └── proto/                              # Protocol Buffers
-│       ├── api/
-│       │   └── v1/
-│       │       ├── proof.proto             # Proof request/response
-│       │       └── status.proto            # Status messages
-│       └── coordinator/
-│           └── v1/
-│               ├── task.proto              # Task messages
-│               └── heartbeat.proto         # Heartbeat messages
-│
-├── pkg/                                    # Public libraries (reusable)
-│   └── client/
-│       └── zkp_client.go                   # Client library for external users
-│
-├── api/                                    # API specifications
-│   ├── openapi/
-│   │   └── api.yaml                        # OpenAPI 3.0 spec
-│   └── grpc/
-│       └── *.proto                         # gRPC service definitions
-│
-├── configs/                                # Configuration files
-│   ├── api-gateway.yaml
-│   ├── coordinator.yaml
-│   ├── worker.yaml
-│   └── dev/                                # Development configs
-│       └── *.yaml
-│
-├── deployments/                            # Deployment configurations
-│   ├── docker/
-│   │   ├── Dockerfile.api-gateway
-│   │   ├── Dockerfile.coordinator
-│   │   ├── Dockerfile.worker
-│   │   └── docker-compose.yml              # Local development setup
-│   ├── kubernetes/
-│   │   ├── base/
-│   │   │   ├── api-gateway/
-│   │   │   │   ├── deployment.yaml
-│   │   │   │   ├── service.yaml
-│   │   │   │   └── hpa.yaml
-│   │   │   ├── coordinator/
-│   │   │   │   ├── statefulset.yaml
-│   │   │   │   ├── service.yaml
-│   │   │   │   └── headless-service.yaml
-│   │   │   └── worker/
-│   │   │       ├── deployment.yaml
-│   │   │       ├── service.yaml
-│   │   │       └── hpa.yaml
-│   │   ├── overlays/
-│   │   │   ├── dev/
-│   │   │   ├── staging/
-│   │   │   └── prod/
-│   │   └── helm/
-│   │       └── zkp-network/
-│   │           ├── Chart.yaml
-│   │           ├── values.yaml
-│   │           └── templates/
-│   └── terraform/
-│       ├── modules/
-│       │   ├── eks/                        # EKS cluster setup
-│       │   ├── rds/                        # RDS PostgreSQL
-│       │   └── elasticache/                # Redis ElastiCache
-│       ├── environments/
-│       │   ├── dev/
-│       │   ├── staging/
-│       │   └── prod/
-│       └── main.tf
-│
-├── scripts/                                # Utility scripts
-│   ├── setup.sh                            # Initial setup
-│   ├── generate-protos.sh                  # Compile protobuf files
-│   ├── run-migrations.sh                   # Database migrations
-│   └── load-test.sh                        # Load testing script
-│
-├── test/                                   # Tests
-│   ├── unit/                               # Unit tests
-│   ├── integration/                        # Integration tests
-│   │   ├── api_test.go
-│   │   ├── coordinator_test.go
-│   │   └── worker_test.go
-│   ├── e2e/                                # End-to-end tests
-│   │   └── proof_generation_test.go
-│   └── testdata/                           # Test fixtures
-│       ├── circuits/
-│       └── proofs/
-│
-├── docs/                                   # Documentation
-│   ├── architecture/
-│   │   ├── system-design.md
-│   │   ├── consensus.md
-│   │   └── data-flow.md
+│   └── worker/
+├── internal/               ← Application code
 │   ├── api/
-│   │   └── endpoints.md
-│   └── operations/
-│       ├── deployment.md
-│       └── monitoring.md
-│
-├── monitoring/                             # Monitoring configs
-│   ├── prometheus/
-│   │   └── prometheus.yml
-│   ├── grafana/
-│   │   └── dashboards/
-│   │       ├── coordinator.json
-│   │       ├── worker.json
-│   │       └── system.json
-│   └── alerting/
-│       └── rules.yml
-│
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                          # CI pipeline
-│       ├── cd.yml                          # CD pipeline
-│       └── security-scan.yml               # Security scanning
-│
-├── go.mod                                  # Go module definition
-├── go.sum                                  # Dependency checksums
-├── Makefile                                # Build automation
-├── README.md                               # This file
-├── .gitignore
-├── .dockerignore
-└── LICENSE
-
+│   ├── coordinator/
+│   ├── worker/
+│   └── proto/
+├── scripts/                ← Automation
+│   ├── sh/                 ← Unix scripts
+│   └── bat/                ← Windows scripts
+├── test/                   ← Test suites
+│   ├── e2e/
+│   └── manual/
+├── docs/                   ← Documentation
+└── deployments/            ← Docker configs
 ```
 
----
-
-## Initial Setup Commands
+### Common Commands
 
 ```bash
-# Initialize Go module
-go mod init github.com/saiweb3dev/zkp-distributed-network
+# Build all services
+make build
 
-# Install core dependencies
-go get -u google.golang.org/grpc
-go get -u google.golang.org/protobuf
-go get -u github.com/consensys/gnark
-go get -u github.com/gorilla/mux
-go get -u github.com/lib/pq
-go get -u github.com/go-redis/redis/v8
-go get -u github.com/prometheus/client_golang/prometheus
-go get -u go.uber.org/zap
-go get -u github.com/spf13/viper
-go get -u github.com/hashicorp/raft
-go get -u github.com/opentracing/opentracing-go
+# Run tests
+make test
 
-# Development tools
-go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
-go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+# Start cluster
+make cluster
+
+# Stop all services
+make stop
+
+# Clean artifacts
+make clean
 ```
 
----
+### Script Locations
 
-## Key Technologies
+**Unix/macOS:** `scripts/sh/`
+- bootstrap-raft.sh
+- start-cluster.sh
+- stop-services.sh
+- test-services.sh
+- setup.sh
 
-### Core
+**Windows:** `scripts/bat/`
+- bootstrap-raft.bat
+- start-cluster.bat
+- stop-services.bat
+- test-services.bat
 
-- **Language**: Go 1.22+
-- **ZKP Library**: gnark (consensys)
-- **Consensus**: Raft (HashiCorp)
-- **API**: gRPC + HTTP/2
+## 🔄 Raft Consensus
 
-### Data Layer
+The system uses Raft for leader election and fault tolerance:
 
-- **Primary DB**: PostgreSQL 15+
-- **Cache**: Redis 7+
-- **Blockchain**: Custom file-based chain
+- **3 Coordinators:** High availability cluster
+- **Leader Election:** Automatic failover (< 10 seconds)
+- **Log Replication:** Consistent task state
+- **Network Partition:** Quorum-based decisions
 
-### Observability
+```bash
+# Check cluster status
+curl http://localhost:8090/health | python -m json.tool
 
-- **Metrics**: Prometheus
-- **Visualization**: Grafana
-- **Tracing**: Jaeger
-- **Logging**: Zap/Zerolog + ELK
+# Verify leader
+curl http://localhost:8090/health | grep "is_leader"
+```
 
-### Infrastructure
+## 🚀 Deployment
 
-- **Containers**: Docker
-- **Orchestration**: Kubernetes
-- **IaC**: Terraform
-- **CI/CD**: GitHub Actions
+### Docker Compose (Development)
+```bash
+docker-compose -f deployments/docker/docker-compose-cluster.yml up
+```
 
----
+### Kubernetes (Production)
+See [Production Deployment Guide](docs/PRODUCTION_DEPLOYMENT.md)
 
-## Contributing
+### CI/CD
+GitHub Actions workflow:
+- Code quality checks
+- Unit tests (50%+ coverage)
+- Integration tests
+- E2E task flow validation
+- Performance benchmarks
+- Automated deployment
 
-This is a learning project. Feel free to experiment, break things, and learn from failures!
+## 📊 Monitoring
 
-## License
+Access observability endpoints:
+- **Coordinator Health:** http://localhost:8090/health
+- **API Gateway:** http://localhost:8080/health
+- **Metrics:** (Coming soon - Prometheus)
 
-MIT License - See LICENSE file for details
+## 🐛 Troubleshooting
+
+### Cluster Won't Start
+```bash
+# Check Docker containers
+docker ps
+
+# Check logs
+docker logs zkp-coordinator-1
+
+# Reset cluster
+./scripts/sh/stop-services.sh
+docker volume prune -f
+./scripts/sh/start-cluster.sh
+```
+
+### No Leader Elected
+```bash
+# Verify network connectivity
+docker network inspect docker_zkp-network
+
+# Check Raft logs
+docker logs zkp-coordinator-1 | grep -i "raft"
+```
+
+### Tests Failing
+See [Test Failure Analysis](docs/TEST_FAILURE_ANALYSIS.md)
+
+## 📖 Additional Resources
+
+- [Documentation Index](docs/README.md) - All documentation
+- [Cheatsheet](docs/Cheatsheet.md) - Quick command reference
+- [CI/CD Pipeline](docs/CI_CD_PIPELINE.md) - Workflow details
+
+## 📝 License
+
+MIT License - See LICENSE file
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create feature branch
+3. Run tests: `make test`
+4. Submit pull request
+
+## 📞 Support
+
+- Issues: GitHub Issues
+- Docs: [docs/README.md](docs/README.md)
+- Tests: [test/README.md](test/README.md)

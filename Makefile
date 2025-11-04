@@ -205,6 +205,60 @@ dev-down:
 dev-logs:
 	docker-compose -f deployments/docker/docker-compose.yml logs -f
 
+# ============================================================================
+# Cluster Management (Simplified)
+# ============================================================================
+
+## cluster: Start production cluster (3 coordinators, 2 workers, 1 API gateway)
+cluster:
+	@echo "$(COLOR_BLUE)Starting production cluster...$(COLOR_RESET)"
+	@bash scripts/sh/start-cluster.sh || cmd /c scripts\\bat\\start-cluster.bat
+	@echo "$(COLOR_GREEN)✓ Cluster started$(COLOR_RESET)"
+	@echo "  API Gateway: http://localhost:8080"
+	@echo "  Coordinator-1: http://localhost:8090"
+	@echo "  Coordinator-2: http://localhost:8091"
+	@echo "  Coordinator-3: http://localhost:8092"
+
+## stop: Stop all services
+stop:
+	@echo "$(COLOR_YELLOW)Stopping all services...$(COLOR_RESET)"
+	@bash scripts/sh/stop-services.sh || cmd /c scripts\\bat\\stop-services.bat
+	@echo "$(COLOR_GREEN)✓ All services stopped$(COLOR_RESET)"
+
+## health: Check cluster health
+health:
+	@echo "$(COLOR_BLUE)Checking cluster health...$(COLOR_RESET)"
+	@bash scripts/sh/test-services.sh || cmd /c scripts\\bat\\test-services.bat
+
+## restart: Restart the cluster
+restart: stop cluster
+
+## logs: View all service logs
+logs:
+	docker-compose -f deployments/docker/docker-compose-cluster.yml logs -f
+
+## logs-coordinator: View coordinator logs
+logs-coordinator:
+	@docker logs -f zkp-coordinator-1
+
+## logs-worker: View worker logs
+logs-worker:
+	@docker logs -f zkp-worker-1-cluster
+
+## logs-gateway: View API gateway logs
+logs-gateway:
+	@docker logs -f zkp-api-gateway-cluster
+
+## ps: Show running containers
+ps:
+	@docker ps --filter "name=zkp-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+## clean-volumes: Remove all Docker volumes
+clean-volumes:
+	@echo "$(COLOR_YELLOW)Removing Docker volumes...$(COLOR_RESET)"
+	@docker volume rm docker_coordinator-1-data docker_coordinator-2-data docker_coordinator-3-data 2>/dev/null || true
+	@echo "$(COLOR_GREEN)✓ Volumes removed$(COLOR_RESET)"
+
 ## migrate-up: Run database migrations up
 migrate-up:
 	@echo "$(COLOR_BLUE)Running migrations...$(COLOR_RESET)"
