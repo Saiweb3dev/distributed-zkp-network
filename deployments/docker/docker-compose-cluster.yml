@@ -1,0 +1,212 @@
+services:
+  # ============================================================================
+  # PostgreSQL Database (Shared by all coordinators)
+  # ============================================================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: zkp-postgres-cluster
+    environment:
+      POSTGRES_DB: zkp_network
+      POSTGRES_USER: zkp_user
+      POSTGRES_PASSWORD: zkp_password
+    volumes:
+      - postgres_cluster_data:/var/lib/postgresql/data
+      - ../../internal/storage/postgres/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    networks:
+      - zkp-cluster-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zkp_user -d zkp_network"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ============================================================================
+  # Coordinator Cluster (3 nodes for high availability)
+  # ============================================================================
+  
+  coordinator-1:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.coordinator
+    container_name: zkp-coordinator-1
+    hostname: coordinator-1
+    environment:
+      - COORDINATOR_COORDINATOR_ID=coordinator-1
+      - COORDINATOR_COORDINATOR_GRPC_PORT=9090
+      - COORDINATOR_COORDINATOR_HTTP_PORT=8090
+      - COORDINATOR_DATABASE_HOST=postgres
+      - COORDINATOR_DATABASE_PORT=5432
+      - COORDINATOR_DATABASE_DATABASE=zkp_network
+      - COORDINATOR_DATABASE_USER=zkp_user
+      - COORDINATOR_DATABASE_PASSWORD=zkp_password
+      - COORDINATOR_DATABASE_SSL_MODE=disable
+      - COORDINATOR_COORDINATOR_RAFT_NODE_ID=coordinator-1
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_PORT=7000
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_DIR=/var/lib/zkp/raft
+      - COORDINATOR_COORDINATOR_RAFT_BOOTSTRAP=true
+    ports:
+      - "9090:9090"  # gRPC
+      - "8090:8090"  # HTTP
+      - "7000:7000"  # Raft
+    volumes:
+      - coordinator-1-data:/var/lib/zkp/raft
+      - ../../configs:/app/configs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+  
+  coordinator-2:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.coordinator
+    container_name: zkp-coordinator-2
+    hostname: coordinator-2
+    environment:
+      - COORDINATOR_COORDINATOR_ID=coordinator-2
+      - COORDINATOR_COORDINATOR_GRPC_PORT=9090
+      - COORDINATOR_COORDINATOR_HTTP_PORT=8090
+      - COORDINATOR_DATABASE_HOST=postgres
+      - COORDINATOR_DATABASE_PORT=5432
+      - COORDINATOR_DATABASE_DATABASE=zkp_network
+      - COORDINATOR_DATABASE_USER=zkp_user
+      - COORDINATOR_DATABASE_PASSWORD=zkp_password
+      - COORDINATOR_DATABASE_SSL_MODE=disable
+      - COORDINATOR_COORDINATOR_RAFT_NODE_ID=coordinator-2
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_PORT=7000
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_DIR=/var/lib/zkp/raft
+      - COORDINATOR_COORDINATOR_RAFT_BOOTSTRAP=false
+    ports:
+      - "9091:9090"
+      - "8091:8090"
+      - "7001:7000"
+    volumes:
+      - coordinator-2-data:/var/lib/zkp/raft
+      - ../../configs:/app/configs
+    depends_on:
+      - postgres
+      - coordinator-1
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+  
+  coordinator-3:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.coordinator
+    container_name: zkp-coordinator-3
+    hostname: coordinator-3
+    environment:
+      - COORDINATOR_COORDINATOR_ID=coordinator-3
+      - COORDINATOR_COORDINATOR_GRPC_PORT=9090
+      - COORDINATOR_COORDINATOR_HTTP_PORT=8090
+      - COORDINATOR_DATABASE_HOST=postgres
+      - COORDINATOR_DATABASE_PORT=5432
+      - COORDINATOR_DATABASE_DATABASE=zkp_network
+      - COORDINATOR_DATABASE_USER=zkp_user
+      - COORDINATOR_DATABASE_PASSWORD=zkp_password
+      - COORDINATOR_DATABASE_SSL_MODE=disable
+      - COORDINATOR_COORDINATOR_RAFT_NODE_ID=coordinator-3
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_PORT=7000
+      - COORDINATOR_COORDINATOR_RAFT_RAFT_DIR=/var/lib/zkp/raft
+      - COORDINATOR_COORDINATOR_RAFT_BOOTSTRAP=false
+    ports:
+      - "9092:9090"
+      - "8092:8090"
+      - "7002:7000"
+    volumes:
+      - coordinator-3-data:/var/lib/zkp/raft
+      - ../../configs:/app/configs
+    depends_on:
+      - postgres
+      - coordinator-1
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # API Gateway
+  # ============================================================================
+  api-gateway:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.api-gateway
+    container_name: zkp-api-gateway-cluster
+    environment:
+      - API_GATEWAY_SERVER_PORT=8080
+      - API_GATEWAY_COORDINATOR_ADDRESS=coordinator-1:9090
+      - API_GATEWAY_DATABASE_HOST=postgres
+      - API_GATEWAY_DATABASE_PORT=5432
+      - API_GATEWAY_DATABASE_DATABASE=zkp_network
+      - API_GATEWAY_DATABASE_USER=zkp_user
+      - API_GATEWAY_DATABASE_PASSWORD=zkp_password
+      - API_GATEWAY_DATABASE_SSL_MODE=disable
+    ports:
+      - "8080:8080"
+    depends_on:
+      - coordinator-1
+      - coordinator-2
+      - coordinator-3
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+
+  # ============================================================================
+  # Workers (Connect to coordinator cluster)
+  # ============================================================================
+  
+  worker-1:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.worker
+    container_name: zkp-worker-1-cluster
+    environment:
+      - WORKER_WORKER_ID=worker-1-cluster
+      - WORKER_WORKER_COORDINATOR_ADDRESS=coordinator-1:9090
+      - WORKER_WORKER_CONCURRENCY=3
+      - WORKER_WORKER_HEARTBEAT_INTERVAL=5s
+    depends_on:
+      - coordinator-1
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+
+  worker-2:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.worker
+    container_name: zkp-worker-2-cluster
+    environment:
+      - WORKER_WORKER_ID=worker-2-cluster
+      - WORKER_WORKER_COORDINATOR_ADDRESS=coordinator-2:9090
+      - WORKER_WORKER_CONCURRENCY=3
+      - WORKER_WORKER_HEARTBEAT_INTERVAL=5s
+    depends_on:
+      - coordinator-2
+    networks:
+      - zkp-cluster-network
+    restart: unless-stopped
+
+# ============================================================================
+# Volumes (Persistent storage for Raft logs and database)
+# ============================================================================
+volumes:
+  postgres_cluster_data:
+    driver: local
+  coordinator-1-data:
+    driver: local
+  coordinator-2-data:
+    driver: local
+  coordinator-3-data:
+    driver: local
+
+# ============================================================================
+# Networks
+# ============================================================================
+networks:
+  zkp-cluster-network:
+    driver: bridge

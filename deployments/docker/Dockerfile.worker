@@ -1,0 +1,57 @@
+# ============================================================================
+# Multi-stage Dockerfile for ZKP Worker Node
+# ============================================================================
+
+# Stage 1: Build
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make gcc musl-dev
+
+WORKDIR /build
+
+# Copy dependency files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the worker binary
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo \
+  -ldflags '-extldflags "-static"' \
+  -o worker \
+  ./cmd/worker
+
+# Stage 2: Runtime
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk --no-cache add ca-certificates tzdata
+
+# Create app directory
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/worker /app/worker
+
+# Copy configuration files
+COPY configs /app/configs
+
+# Set default environment variables
+ENV WORKER_ID=worker-1
+ENV COORDINATOR_ADDRESS=coordinator:9090
+ENV CONCURRENCY=3
+ENV HEARTBEAT_INTERVAL=5s
+ENV ZKP_CURVE=bn254
+ENV ZKP_BACKEND=groth16
+
+# Health check (workers don't expose HTTP but we can check process)
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD pgrep -x worker || exit 1
+
+# Run worker
+ENTRYPOINT ["/app/worker"]
+CMD ["--config", "/app/configs/worker.yaml"]

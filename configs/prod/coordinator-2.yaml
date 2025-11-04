@@ -1,0 +1,50 @@
+# Coordinator-2 Configuration (Machine 2: 192.168.1.11)
+# Production deployment on separate physical/virtual machine
+
+coordinator:
+  id: "coordinator-2"
+  grpc_port: 9090
+  http_port: 8090
+  
+  raft:
+    node_id: "coordinator-2"
+    raft_port: 7000
+    raft_dir: "/var/lib/zkp/raft"
+    bootstrap: false  # ONLY TRUE ON FIRST NODE!
+    
+    # Production: Use actual IP addresses
+    peers:
+      - id: "coordinator-1"
+        address: "192.168.1.10:7000"  # Machine 1
+      - id: "coordinator-2"
+        address: "192.168.1.11:7000"  # This machine
+      - id: "coordinator-3"
+        address: "192.168.1.12:7000"  # Machine 3
+    
+    heartbeat_timeout: 2s
+    election_timeout: 3s
+    commit_timeout: 100ms
+    max_append_entries: 64
+    snapshot_interval: 300s
+    snapshot_threshold: 10000
+
+database:
+  host: "postgres.prod.example.com"
+  port: 5432
+  database: "zkp_network"
+  user: "zkp_user"
+  password: "${DB_PASSWORD}"
+  ssl_mode: "require"
+  max_open_conns: 50
+  max_idle_conns: 10
+  conn_max_lifetime: "30m"
+
+logging:
+  level: "info"
+  format: "json"
+  output: "stdout"
+
+metrics:
+  enabled: true
+  port: 9091
+  path: "/metrics"

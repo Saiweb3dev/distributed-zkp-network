@@ -1,0 +1,66 @@
+# ============================================================================
+# Multi-stage Dockerfile for ZKP Coordinator with Raft Consensus
+# ============================================================================
+
+# Stage 1: Build
+FROM golang:1.24-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make gcc musl-dev
+
+WORKDIR /build
+
+# Copy dependency files
+COPY go.mod go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the coordinator binary
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo \
+  -ldflags '-extldflags "-static"' \
+  -o coordinator \
+  ./cmd/coordinator
+
+# Stage 2: Runtime
+FROM alpine:latest
+
+# Install runtime dependencies
+RUN apk --no-cache add ca-certificates tzdata
+
+# Create app directory
+WORKDIR /app
+
+# Create data directory for Raft logs
+RUN mkdir -p /var/lib/zkp/raft
+
+# Copy binary from builder
+COPY --from=builder /build/coordinator /app/coordinator
+
+# Copy configuration files
+COPY configs /app/configs
+
+# Expose ports
+# 9090 - gRPC (worker communication)
+# 8090 - HTTP (health checks, metrics)
+# 7000 - Raft consensus
+EXPOSE 9090 8090 7000
+
+# Set default environment variables
+ENV COORDINATOR_ID=coordinator-1
+ENV RAFT_NODE_ID=coordinator-1
+ENV RAFT_ADDR=0.0.0.0:7000
+ENV RAFT_DIR=/var/lib/zkp/raft
+ENV GRPC_PORT=9090
+ENV HTTP_PORT=8090
+
+# Health check
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:${HTTP_PORT}/health || exit 1
+
+# Run coordinator
+ENTRYPOINT ["/app/coordinator"]
+CMD ["--config", "/app/configs/coordinator-cluster.yaml"]

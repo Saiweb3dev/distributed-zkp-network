@@ -24,7 +24,7 @@ coordinator:
   cleanup_interval: 1m
 
 database:
-  host: "postgres"      # Docker service name, use "localhost" for local dev
+  host: "zkp-postgres"      # Docker service name, use "localhost" for local dev
   port: 5432
   database: "zkp_network"
   user: "postgres"
