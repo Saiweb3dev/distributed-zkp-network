@@ -47,6 +47,10 @@ func SetupRouter(proofHandler *handlers.ProofHandler, logger *zap.Logger) *mux.R
 	// ========================================================================
 
 	r.HandleFunc("/health", proofHandler.HealthCheck).Methods("GET")
+	r.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"status": "ready"}`))
+	}).Methods("GET")
 	r.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(`{"service": "zkp-network", "version": "0.1.0"}`))

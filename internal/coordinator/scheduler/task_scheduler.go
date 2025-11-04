@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
@@ -17,15 +18,16 @@ import (
 type TaskScheduler struct {
 	taskRepo       postgres.TaskRepository
 	workerRegistry *registry.WorkerRegistry
+	raftNode       *raft.RaftNode
 	logger         *zap.Logger
-	
-	pollInterval   time.Duration
-	assignTimeout  time.Duration
-	
-	ctx            context.Context
-	cancel         context.CancelFunc
-	
-	metrics        SchedulerMetrics
+
+	pollInterval  time.Duration
+	assignTimeout time.Duration
+
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	metrics SchedulerMetrics
 }
 
 // SchedulerMetrics tracks scheduler performance for observability
@@ -42,14 +44,16 @@ type SchedulerMetrics struct {
 func NewTaskScheduler(
 	taskRepo postgres.TaskRepository,
 	workerRegistry *registry.WorkerRegistry,
+	raftNode *raft.RaftNode,
 	pollInterval time.Duration,
 	logger *zap.Logger,
 ) *TaskScheduler {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	return &TaskScheduler{
 		taskRepo:       taskRepo,
 		workerRegistry: workerRegistry,
+		raftNode:       raftNode,
 		logger:         logger,
 		pollInterval:   pollInterval,
 		assignTimeout:  time.Second * 5,
@@ -65,7 +69,7 @@ func (ts *TaskScheduler) Start() {
 	ts.logger.Info("Starting task scheduler",
 		zap.Duration("poll_interval", ts.pollInterval),
 	)
-	
+
 	go ts.schedulingLoop()
 }
 
@@ -82,18 +86,23 @@ func (ts *TaskScheduler) Stop() {
 func (ts *TaskScheduler) schedulingLoop() {
 	ticker := time.NewTicker(ts.pollInterval)
 	defer ticker.Stop()
-	
+
 	for {
 		select {
 		case <-ticker.C:
+			// CRITICAL: Only leader schedules tasks
+			if !ts.raftNode.IsLeader() {
+				ts.logger.Debug("Skipping schedule cycle (not leader)")
+				continue
+			}
 			ts.metrics.PollCycles++
-			
+
 			if err := ts.scheduleOneCycle(); err != nil {
 				ts.logger.Error("Scheduling cycle failed",
 					zap.Error(err),
 				)
 			}
-			
+
 		case <-ts.ctx.Done():
 			ts.logger.Info("Scheduling loop terminated")
 			return
@@ -107,18 +116,18 @@ func (ts *TaskScheduler) schedulingLoop() {
 func (ts *TaskScheduler) scheduleOneCycle() error {
 	ctx, cancel := context.WithTimeout(ts.ctx, ts.assignTimeout)
 	defer cancel()
-	
-		// Step 1: Fetch pending tasks from database
-	tasks, err := ts.taskRepo.GetPendingTasks(ctx, 10)  // Batch size
+
+	// Step 1: Fetch pending tasks from database
+	tasks, err := ts.taskRepo.GetPendingTasks(ctx, 10) // Batch size
 	if err != nil {
 		return fmt.Errorf("failed to fetch pending tasks: %w", err)
 	}
-	
+
 	if len(tasks) == 0 {
 		// No work to do, this is normal
 		return nil
 	}
-	
+
 	ts.logger.Debug("Found pending tasks",
 		zap.Int("count", len(tasks)),
 	)
@@ -129,18 +138,18 @@ func (ts *TaskScheduler) scheduleOneCycle() error {
 		ts.logger.Warn("No available workers for task assignment")
 		return nil
 	}
-	
+
 	ts.logger.Debug("Available workers",
 		zap.Int("count", len(workers)),
 	)
 
-		// Step 3: Assign tasks to workers using round-robin strategy
+	// Step 3: Assign tasks to workers using round-robin strategy
 	workerIndex := 0
 	for _, task := range tasks {
 		// Select next worker (round-robin)
 		worker := workers[workerIndex%len(workers)]
 		workerIndex++
-		
+
 		// Attempt assignment
 		if err := ts.assignTaskToWorker(ctx, task, worker); err != nil {
 			ts.logger.Error("Failed to assign task",
@@ -151,17 +160,17 @@ func (ts *TaskScheduler) scheduleOneCycle() error {
 			ts.metrics.AssignmentsFailed++
 			continue
 		}
-		
+
 		ts.metrics.TasksAssigned++
 		ts.metrics.LastAssignmentAt = time.Now()
-		
+
 		ts.logger.Info("Task assigned",
 			zap.String("task_id", task.ID),
 			zap.String("worker_id", worker.ID),
 			zap.String("circuit_type", task.CircuitType),
 		)
 	}
-	
+
 	return nil
 }
 
@@ -177,7 +186,7 @@ func (ts *TaskScheduler) assignTaskToWorker(
 	if err := ts.taskRepo.AssignTask(ctx, task.ID, worker.ID); err != nil {
 		return fmt.Errorf("database assignment failed: %w", err)
 	}
-	
+
 	// Step 2: Notify worker registry to update capacity tracking
 	if err := ts.workerRegistry.IncrementTaskCount(worker.ID); err != nil {
 		// Log but don't fail - the database is the source of truth
@@ -186,7 +195,7 @@ func (ts *TaskScheduler) assignTaskToWorker(
 			zap.Error(err),
 		)
 	}
-	
+
 	// Step 3: Send task to worker via gRPC
 	// The worker client is maintained by the registry
 	if err := ts.workerRegistry.SendTask(ctx, worker.ID, task); err != nil {
@@ -196,7 +205,7 @@ func (ts *TaskScheduler) assignTaskToWorker(
 			zap.String("worker_id", worker.ID),
 			zap.Error(err),
 		)
-		
+
 		// Revert the assignment
 		if revertErr := ts.taskRepo.UnassignTask(ctx, task.ID); revertErr != nil {
 			ts.logger.Error("Failed to revert task assignment",
@@ -204,11 +213,11 @@ func (ts *TaskScheduler) assignTaskToWorker(
 				zap.Error(revertErr),
 			)
 		}
-		
+
 		ts.workerRegistry.DecrementTaskCount(worker.ID)
 		return fmt.Errorf("gRPC send failed: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -220,19 +229,19 @@ func (ts *TaskScheduler) HandleStaleTasks(ctx context.Context, staleThreshold ti
 	if err != nil {
 		return fmt.Errorf("failed to fetch stale tasks: %w", err)
 	}
-	
+
 	if len(staleTasks) == 0 {
 		return nil
 	}
-	
+
 	ts.logger.Warn("Found stale tasks for reassignment",
 		zap.Int("count", len(staleTasks)),
 	)
-	
+
 	for _, task := range staleTasks {
 		// Mark worker as potentially dead
 		ts.workerRegistry.MarkWorkerSuspect(task.WorkerID)
-		
+
 		// Reset task to pending status for reassignment
 		if err := ts.taskRepo.ResetTaskToPending(ctx, task.ID); err != nil {
 			ts.logger.Error("Failed to reset stale task",
@@ -241,14 +250,14 @@ func (ts *TaskScheduler) HandleStaleTasks(ctx context.Context, staleThreshold ti
 			)
 			continue
 		}
-		
+
 		ts.logger.Info("Stale task reset for reassignment",
 			zap.String("task_id", task.ID),
 			zap.String("previous_worker", task.WorkerID),
 			zap.Duration("stale_duration", time.Since(task.StartedAt)),
 		)
 	}
-	
+
 	return nil
 }
 
@@ -275,10 +284,10 @@ func (p *RoundRobinPolicy) SelectWorker(
 	if len(workers) == 0 {
 		return nil, fmt.Errorf("no workers available")
 	}
-	
+
 	worker := workers[p.nextIndex%len(workers)]
 	p.nextIndex++
-	
+
 	return worker, nil
 }
 
@@ -292,10 +301,10 @@ func (p *LeastLoadedPolicy) SelectWorker(
 	if len(workers) == 0 {
 		return nil, fmt.Errorf("no workers available")
 	}
-	
+
 	var bestWorker *registry.WorkerInfo
 	maxAvailableSlots := -1
-	
+
 	for _, worker := range workers {
 		availableSlots := worker.MaxConcurrentTasks - worker.CurrentTaskCount
 		if availableSlots > maxAvailableSlots {
@@ -303,7 +312,7 @@ func (p *LeastLoadedPolicy) SelectWorker(
 			bestWorker = worker
 		}
 	}
-	
+
 	return bestWorker, nil
 }
 
@@ -318,11 +327,11 @@ func (p *PriorityPolicy) SelectWorker(
 	if len(workers) == 0 {
 		return nil, fmt.Errorf("no workers available")
 	}
-	
+
 	// For now, treat all tasks equally
 	// In future, could parse priority from task.InputData
 	// and prefer faster workers for high-priority tasks
-	
+
 	// Default to least loaded
 	leastLoaded := &LeastLoadedPolicy{}
 	return leastLoaded.SelectWorker(task, workers)
@@ -330,10 +339,10 @@ func (p *PriorityPolicy) SelectWorker(
 
 // SchedulerConfig holds tunable parameters for the scheduler
 type SchedulerConfig struct {
-	PollInterval      time.Duration  // How often to check for new tasks
-	BatchSize         int            // Max tasks to assign per cycle
-	StaleTaskTimeout  time.Duration  // When to consider a task stale
-	Policy            SchedulingPolicy  // Worker selection strategy
+	PollInterval     time.Duration    // How often to check for new tasks
+	BatchSize        int              // Max tasks to assign per cycle
+	StaleTaskTimeout time.Duration    // When to consider a task stale
+	Policy           SchedulingPolicy // Worker selection strategy
 }
 
 // DefaultSchedulerConfig returns reasonable defaults for production use

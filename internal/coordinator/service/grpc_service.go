@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	pb "github.com/saiweb3dev/distributed-zkp-network/internal/proto/coordinator"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
@@ -26,6 +27,7 @@ type CoordinatorGRPCService struct {
 
 	workerRegistry *registry.WorkerRegistry
 	taskRepo       postgres.TaskRepository
+	raftNode       *raft.RaftNode
 	logger         *zap.Logger
 
 	// Task streaming: map of worker_id -> channel for pushing tasks
@@ -37,11 +39,13 @@ type CoordinatorGRPCService struct {
 func NewCoordinatorGRPCService(
 	workerRegistry *registry.WorkerRegistry,
 	taskRepo postgres.TaskRepository,
+	raftNode *raft.RaftNode,
 	logger *zap.Logger,
 ) *CoordinatorGRPCService {
 	return &CoordinatorGRPCService{
 		workerRegistry: workerRegistry,
 		taskRepo:       taskRepo,
+		raftNode:       raftNode,
 		logger:         logger,
 		taskStreams:    make(map[string]chan *pb.TaskAssignment),
 	}
@@ -53,6 +57,28 @@ func (s *CoordinatorGRPCService) RegisterWorker(
 	ctx context.Context,
 	req *pb.RegisterWorkerRequest,
 ) (*pb.RegisterWorkerResponse, error) {
+	// If we're not the leader, redirect to leader
+	if !s.raftNode.IsLeader() {
+		leaderAddr := s.raftNode.GetLeaderAddress()
+		if leaderAddr == "" {
+			return &pb.RegisterWorkerResponse{
+				Success: false,
+				Message: "No leader elected, retry later",
+			}, nil
+		}
+
+		s.logger.Info("Not leader, redirecting registration",
+			zap.String("worker_id", req.WorkerId),
+			zap.String("leader", leaderAddr),
+		)
+
+		return &pb.RegisterWorkerResponse{
+			Success: false,
+			Message: fmt.Sprintf("Not leader, connect to: %s", leaderAddr),
+		}, nil
+	}
+
+	// We're the leader, handle registration
 	s.logger.Info("Worker registration request",
 		zap.String("worker_id", req.WorkerId),
 		zap.Int32("max_concurrent", req.MaxConcurrentTasks),
@@ -218,6 +244,18 @@ func (s *CoordinatorGRPCService) ReceiveTasks(
 	stream pb.CoordinatorService_ReceiveTasksServer,
 ) error {
 	workerID := req.WorkerId
+
+	// Only leaders push tasks
+	if !s.raftNode.IsLeader() {
+		s.logger.Info("Non-leader, not pushing tasks",
+			zap.String("worker_id", workerID),
+		)
+
+		// Keep stream open but don't push tasks
+		// Workers will reconnect on leadership change
+		<-stream.Context().Done()
+		return stream.Context().Err()
+	}
 
 	s.logger.Info("Worker connected for task stream",
 		zap.String("worker_id", workerID),

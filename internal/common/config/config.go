@@ -80,6 +80,28 @@ type CoordinatorNodeConfig struct {
 	HeartbeatTimeout time.Duration `mapstructure:"heartbeat_timeout"`  // Worker heartbeat timeout
 	StaleTaskTimeout time.Duration `mapstructure:"stale_task_timeout"` // When to reassign stale tasks
 	CleanupInterval  time.Duration `mapstructure:"cleanup_interval"`   // Dead worker cleanup frequency
+	Raft             RaftConfig    `mapstructure:"raft"`               // Raft consensus configuration
+}
+
+// RaftConfig defines Raft consensus settings
+type RaftConfig struct {
+	NodeID            string        `mapstructure:"node_id"`            // Raft node ID
+	RaftPort          int           `mapstructure:"raft_port"`          // Raft consensus port
+	RaftDir           string        `mapstructure:"raft_dir"`           // Raft data directory
+	Bootstrap         bool          `mapstructure:"bootstrap"`          // Bootstrap new cluster
+	Peers             []RaftPeer    `mapstructure:"peers"`              // Cluster peers
+	HeartbeatTimeout  time.Duration `mapstructure:"heartbeat_timeout"`  // Raft heartbeat timeout
+	ElectionTimeout   time.Duration `mapstructure:"election_timeout"`   // Election timeout
+	CommitTimeout     time.Duration `mapstructure:"commit_timeout"`     // Commit timeout
+	MaxAppendEntries  int           `mapstructure:"max_append_entries"` // Max entries per append
+	SnapshotInterval  time.Duration `mapstructure:"snapshot_interval"`  // Snapshot interval
+	SnapshotThreshold uint64        `mapstructure:"snapshot_threshold"` // Log entries before snapshot
+}
+
+// RaftPeer represents a Raft cluster peer
+type RaftPeer struct {
+	ID      string `mapstructure:"id"`      // Peer node ID
+	Address string `mapstructure:"address"` // Peer Raft address (host:port)
 }
 
 // LoggingConfig controls logging behavior
