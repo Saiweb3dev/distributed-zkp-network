@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gorilla/mux"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
 )
@@ -58,13 +59,15 @@ type ErrorResponse struct {
 
 type ProofHandler struct {
 	taskRepo postgres.TaskRepository
+	eventBus *events.EventBus
 	logger   *zap.Logger
 }
 
 // NewProofHandler creates handler for Phase 2 async task processing
-func NewProofHandler(taskRepo postgres.TaskRepository, logger *zap.Logger) *ProofHandler {
+func NewProofHandler(taskRepo postgres.TaskRepository, eventBus *events.EventBus, logger *zap.Logger) *ProofHandler {
 	return &ProofHandler{
 		taskRepo: taskRepo,
+		eventBus: eventBus,
 		logger:   logger,
 	}
 }
@@ -119,6 +122,32 @@ func (h *ProofHandler) SubmitMerkleProofTask(w http.ResponseWriter, r *http.Requ
 		zap.String("task_id", task.ID),
 		zap.String("status", task.Status),
 	)
+
+	// NEW: Publish event for instant notification to coordinators
+	// This triggers immediate scheduling instead of waiting for poll interval
+	event := events.Event{
+		Type:      events.EventTaskCreated,
+		Timestamp: time.Now().Unix(),
+		Data: map[string]interface{}{
+			"task_id":      task.ID,
+			"circuit_type": task.CircuitType,
+			"status":       task.Status,
+		},
+	}
+
+	if err := h.eventBus.Publish(ctx, event); err != nil {
+		h.logger.Warn("Failed to publish task creation event",
+			zap.Error(err),
+			zap.String("task_id", task.ID),
+		)
+		// Don't fail the request - polling fallback still works
+		// The coordinator will pick up the task via polling if event fails
+	} else {
+		h.logger.Debug("Task creation event published",
+			zap.String("task_id", task.ID),
+			zap.String("event_type", string(events.EventTaskCreated)),
+		)
+	}
 
 	// Step 3: Return task ID immediately (don't wait for proof generation)
 	response := TaskCreatedResponse{

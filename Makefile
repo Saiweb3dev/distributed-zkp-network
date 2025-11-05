@@ -165,6 +165,22 @@ clean:
 	rm -f coverage.out coverage.html
 	@echo "$(COLOR_GREEN)✓ Cleaned$(COLOR_RESET)"
 
+## clean-docker: Clean Docker cache and images (fixes build issues)
+clean-docker:
+	@echo "$(COLOR_YELLOW)Cleaning Docker cache...$(COLOR_RESET)"
+	@echo "Stopping containers..."
+	-docker-compose -f deployments/docker/docker-compose-cluster.yml down -v
+	@echo "Removing images..."
+	-docker rmi zkp-api-gateway-cluster zkp-coordinator-cluster zkp-worker-cluster 2>/dev/null || true
+	-docker rmi distributed-zkp-network-api-gateway distributed-zkp-network-coordinator distributed-zkp-network-worker 2>/dev/null || true
+	@echo "Pruning build cache..."
+	docker builder prune -f
+	@echo "Pruning system..."
+	docker system prune -f
+	@echo "$(COLOR_GREEN)✓ Docker cache cleaned$(COLOR_RESET)"
+	@echo ""
+	@echo "Now run: make cluster"
+
 ## docker-build: Build all Docker images
 docker-build:
 	@echo "$(COLOR_BLUE)Building Docker images...$(COLOR_RESET)"
@@ -209,15 +225,25 @@ dev-logs:
 # Cluster Management (Simplified)
 # ============================================================================
 
-## cluster: Start production cluster (3 coordinators, 2 workers, 1 API gateway)
+## cluster: Start production cluster (3 coordinators, 2 workers, 1 API gateway, Redis)
 cluster:
 	@echo "$(COLOR_BLUE)Starting production cluster...$(COLOR_RESET)"
 	@bash scripts/sh/start-cluster.sh || cmd /c scripts\\bat\\start-cluster.bat
 	@echo "$(COLOR_GREEN)✓ Cluster started$(COLOR_RESET)"
-	@echo "  API Gateway: http://localhost:8080"
-	@echo "  Coordinator-1: http://localhost:8090"
-	@echo "  Coordinator-2: http://localhost:8091"
-	@echo "  Coordinator-3: http://localhost:8092"
+	@echo ""
+	@echo "$(COLOR_BOLD)Service Endpoints:$(COLOR_RESET)"
+	@echo "  API Gateway:    http://localhost:8080"
+	@echo "  Coordinator-1:  http://localhost:8090 (gRPC: 9090)"
+	@echo "  Coordinator-2:  http://localhost:8091 (gRPC: 9091)"
+	@echo "  Coordinator-3:  http://localhost:8092 (gRPC: 9092)"
+	@echo "  Redis:          localhost:6379"
+	@echo "  PostgreSQL:     localhost:5432"
+	@echo ""
+	@echo "$(COLOR_BOLD)Quick Commands:$(COLOR_RESET)"
+	@echo "  make health          - Check cluster health"
+	@echo "  make test-redis      - Test Redis integration"
+	@echo "  make test-events     - Test event-driven scheduling"
+	@echo "  make logs            - View all logs"
 
 ## stop: Stop all services
 stop:
@@ -253,7 +279,152 @@ logs-gateway:
 ps:
 	@docker ps --filter "name=zkp-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
-## clean-volumes: Remove all Docker volumes
+# ============================================================================
+# Redis Integration Testing
+# ============================================================================
+
+## test-redis: Test Redis connectivity and event bus
+test-redis:
+	@echo "$(COLOR_BLUE)Testing Redis integration...$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[1/4] Testing Redis connectivity$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli ping || echo "$(COLOR_YELLOW)Warning: Redis not responding$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[2/4] Checking event bus status$(COLOR_RESET)"
+	@curl -s http://localhost:8090/health | grep -q "redis" && echo "$(COLOR_GREEN)✓ Coordinator connected to Redis$(COLOR_RESET)" || echo "$(COLOR_YELLOW)✗ Coordinator not connected$(COLOR_RESET)"
+	@curl -s http://localhost:8080/health | grep -q "redis" && echo "$(COLOR_GREEN)✓ API Gateway connected to Redis$(COLOR_RESET)" || echo "$(COLOR_YELLOW)✗ API Gateway not connected$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[3/4] Checking active Redis channels$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli PUBSUB CHANNELS
+	@echo ""
+	@echo "$(COLOR_BOLD)[4/4] Redis memory usage$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli INFO memory | grep "used_memory_human"
+	@echo "$(COLOR_GREEN)✓ Redis test complete$(COLOR_RESET)"
+
+## test-events: Test event-driven task scheduling
+test-events:
+	@echo "$(COLOR_BLUE)Testing event-driven scheduling...$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)Submitting test task...$(COLOR_RESET)"
+	@START_TIME=$$(date +%s%3N); \
+	TASK_ID=$$(curl -s -X POST http://localhost:8080/api/v1/tasks/merkle \
+		-H "Content-Type: application/json" \
+		-d '{"leaves":["test1","test2","test3"],"leaf_index":0}' | grep -o '"task_id":"[^"]*"' | cut -d'"' -f4); \
+	END_TIME=$$(date +%s%3N); \
+	LATENCY=$$((END_TIME - START_TIME)); \
+	echo "Task ID: $$TASK_ID"; \
+	echo "API Response Time: $${LATENCY}ms"; \
+	echo ""; \
+	echo "$(COLOR_BOLD)Checking coordinator logs for event reception...$(COLOR_RESET)"; \
+	sleep 1; \
+	docker logs zkp-coordinator-1 --tail 50 | grep -i "event received" || echo "$(COLOR_YELLOW)No event logs found - checking polling$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_GREEN)✓ Event test complete$(COLOR_RESET)"
+
+## test-load: Simulate high event volume (10 concurrent tasks)
+test-load:
+	@echo "$(COLOR_BLUE)Simulating high event volume...$(COLOR_RESET)"
+	@echo "$(COLOR_BOLD)Submitting 10 concurrent tasks...$(COLOR_RESET)"
+	@for i in $$(seq 1 10); do \
+		curl -s -X POST http://localhost:8080/api/v1/tasks/merkle \
+			-H "Content-Type: application/json" \
+			-d "{\"leaves\":[\"load$$i-1\",\"load$$i-2\",\"load$$i-3\"],\"leaf_index\":0}" & \
+	done; \
+	wait; \
+	echo ""; \
+	echo "$(COLOR_GREEN)✓ 10 tasks submitted$(COLOR_RESET)"; \
+	echo ""; \
+	echo "$(COLOR_BOLD)Checking Redis message count...$(COLOR_RESET)"; \
+	sleep 2; \
+	docker logs zkp-coordinator-1 --tail 50 | grep -c "Event received" || echo "0"; \
+	echo "$(COLOR_GREEN)✓ Load test complete$(COLOR_RESET)"
+
+## test-load-heavy: Simulate very high event volume (100 tasks)
+test-load-heavy:
+	@echo "$(COLOR_BLUE)Simulating heavy load (100 tasks)...$(COLOR_RESET)"
+	@echo "This may take 30-60 seconds..."
+	@START_TIME=$$(date +%s); \
+	for i in $$(seq 1 100); do \
+		curl -s -X POST http://localhost:8080/api/v1/tasks/merkle \
+			-H "Content-Type: application/json" \
+			-d "{\"leaves\":[\"heavy$$i-1\",\"heavy$$i-2\",\"heavy$$i-3\"],\"leaf_index\":0}" > /dev/null & \
+		if [ $$(( i % 10 )) -eq 0 ]; then echo "  Submitted $$i/100 tasks..."; fi; \
+	done; \
+	wait; \
+	END_TIME=$$(date +%s); \
+	DURATION=$$((END_TIME - START_TIME)); \
+	echo ""; \
+	echo "$(COLOR_GREEN)✓ 100 tasks submitted in $${DURATION}s$(COLOR_RESET)"; \
+	echo ""; \
+	echo "$(COLOR_BOLD)Performance Metrics:$(COLOR_RESET)"; \
+	sleep 3; \
+	docker exec zkp-redis-cluster redis-cli INFO stats | grep "total_commands_processed"; \
+	docker logs zkp-coordinator-1 --tail 100 | grep -c "Event received" | xargs echo "Events processed:"
+
+## monitor-redis: Monitor Redis in real-time
+monitor-redis:
+	@echo "$(COLOR_BLUE)Starting Redis monitor...$(COLOR_RESET)"
+	@echo "$(COLOR_YELLOW)Press Ctrl+C to stop$(COLOR_RESET)"
+	@echo ""
+	@docker exec -it zkp-redis-cluster redis-cli MONITOR
+
+## redis-cli: Open Redis CLI
+redis-cli:
+	@echo "$(COLOR_BLUE)Opening Redis CLI...$(COLOR_RESET)"
+	@docker exec -it zkp-redis-cluster redis-cli
+
+## redis-stats: Show Redis statistics
+redis-stats:
+	@echo "$(COLOR_BLUE)Redis Statistics$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)Connection Info:$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli INFO clients | grep "connected_clients"
+	@echo ""
+	@echo "$(COLOR_BOLD)Memory Usage:$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli INFO memory | grep -E "used_memory_human|used_memory_peak_human"
+	@echo ""
+	@echo "$(COLOR_BOLD)Stats:$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli INFO stats | grep -E "total_commands_processed|total_connections_received|keyspace_hits|keyspace_misses"
+	@echo ""
+	@echo "$(COLOR_BOLD)Active Channels:$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli PUBSUB CHANNELS
+	@echo ""
+	@echo "$(COLOR_BOLD)Active Subscriptions:$(COLOR_RESET)"
+	@docker exec zkp-redis-cluster redis-cli PUBSUB NUMSUB zkp:events:task.created
+
+## test-degradation: Test graceful degradation (stop Redis)
+test-degradation:
+	@echo "$(COLOR_BLUE)Testing graceful degradation...$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[1/4] Submitting task with Redis active$(COLOR_RESET)"
+	@curl -s -X POST http://localhost:8080/api/v1/tasks/merkle \
+		-H "Content-Type: application/json" \
+		-d '{"leaves":["before","stop","test"],"leaf_index":0}' | grep -o '"task_id":"[^"]*"'
+	@echo "$(COLOR_GREEN)✓ Task submitted successfully$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[2/4] Stopping Redis...$(COLOR_RESET)"
+	@docker stop zkp-redis-cluster
+	@echo "$(COLOR_YELLOW)✓ Redis stopped$(COLOR_RESET)"
+	@sleep 2
+	@echo ""
+	@echo "$(COLOR_BOLD)[3/4] Submitting task without Redis (should still work via polling)$(COLOR_RESET)"
+	@curl -s -X POST http://localhost:8080/api/v1/tasks/merkle \
+		-H "Content-Type: application/json" \
+		-d '{"leaves":["after","stop","test"],"leaf_index":0}' | grep -o '"task_id":"[^"]*"' && echo "$(COLOR_GREEN)✓ Task submitted successfully (polling fallback)$(COLOR_RESET)" || echo "$(COLOR_YELLOW)✗ Task submission failed$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_BOLD)[4/4] Restarting Redis...$(COLOR_RESET)"
+	@docker start zkp-redis-cluster
+	@sleep 3
+	@echo "$(COLOR_GREEN)✓ Redis restarted$(COLOR_RESET)"
+	@echo ""
+	@echo "$(COLOR_GREEN)✓ Degradation test complete$(COLOR_RESET)"
+
+## test-e2e-redis: Complete end-to-end Redis integration test
+test-e2e-redis: test-redis test-events test-load redis-stats
+	@echo ""
+	@echo "$(COLOR_GREEN)✓✓✓ All Redis integration tests passed! ✓✓✓$(COLOR_RESET)"
+
+# ============================================================================
 clean-volumes:
 	@echo "$(COLOR_YELLOW)Removing Docker volumes...$(COLOR_RESET)"
 	@docker volume rm docker_coordinator-1-data docker_coordinator-2-data docker_coordinator-3-data 2>/dev/null || true

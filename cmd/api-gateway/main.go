@@ -14,6 +14,7 @@ import (
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/handlers"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/router"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
 )
@@ -67,18 +68,18 @@ func main() {
 		zap.String("database", cfg.Database.Database),
 	)
 
-	 // Pass connection pool config to ConnectPostgreSQL
-    dbConfig := &postgres.DatabaseConfig{
-        MaxOpenConns:    cfg.Database.MaxOpenConns,
-        MaxIdleConns:    cfg.Database.MaxIdleConns,
-        ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
-    }
+	// Pass connection pool config to ConnectPostgreSQL
+	dbConfig := &postgres.DatabaseConfig{
+		MaxOpenConns:    cfg.Database.MaxOpenConns,
+		MaxIdleConns:    cfg.Database.MaxIdleConns,
+		ConnMaxLifetime: cfg.Database.ConnMaxLifetime,
+	}
 
-    db, err := postgres.ConnectPostgreSQL(cfg.GetDatabaseConnectionString(), dbConfig)
-    if err != nil {
-        logger.Fatal("Failed to connect to database", zap.Error(err))
-    }
-    defer db.Close()
+	db, err := postgres.ConnectPostgreSQL(cfg.GetDatabaseConnectionString(), dbConfig)
+	if err != nil {
+		logger.Fatal("Failed to connect to database", zap.Error(err))
+	}
+	defer db.Close()
 
 	// Test database connection
 	if err := db.Ping(); err != nil {
@@ -90,26 +91,70 @@ func main() {
 	logger.Info("Database connected successfully")
 
 	// ========================================================================
-	// Step 5 : Initialize Repositories
+	// Step 5: Initialize Redis Event Bus
+	// ========================================================================
+
+	var eventBus *events.EventBus
+
+	if cfg.Redis.Enabled {
+		logger.Info("Initializing Redis Event Bus",
+			zap.String("host", cfg.Redis.Host),
+			zap.Int("port", cfg.Redis.Port),
+			zap.Bool("caching_enabled", cfg.Redis.CachingEnabled),
+		)
+
+		eventBusConfig := events.EventBusConfig{
+			Host:         cfg.Redis.Host,
+			Port:         cfg.Redis.Port,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			MaxRetries:   cfg.Redis.MaxRetries,
+			PoolSize:     cfg.Redis.PoolSize,
+			MinIdleConns: cfg.Redis.MinIdleConns,
+			DialTimeout:  cfg.Redis.DialTimeout,
+			ReadTimeout:  cfg.Redis.ReadTimeout,
+			WriteTimeout: cfg.Redis.WriteTimeout,
+			Enabled:      cfg.Redis.Enabled,
+		}
+
+		var err error
+		eventBus, err = events.NewEventBus(eventBusConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize event bus, continuing without events",
+				zap.Error(err),
+			)
+			// Create disabled event bus for graceful degradation
+			eventBus = events.NewDisabledEventBus(logger)
+		} else {
+			logger.Info("Event bus initialized successfully")
+			defer eventBus.Close()
+		}
+	} else {
+		logger.Info("Redis event bus disabled in configuration")
+		eventBus = events.NewDisabledEventBus(logger)
+	}
+
+	// ========================================================================
+	// Step 6 : Initialize Repositories
 	// ========================================================================
 
 	taskRepo := postgres.NewTaskRepository(db)
 
 	// ========================================================================
-	// Step 6 Initialize Handlers
+	// Step 7 Initialize Handlers
 	// ========================================================================
 
 	// Phase 2: Handler uses task repository for async processing
-	proofHandler := handlers.NewProofHandler(taskRepo, logger)
+	proofHandler := handlers.NewProofHandler(taskRepo, eventBus, logger)
 
 	// ========================================================================
-	// Step 6: Setup Router
+	// Step 8: Setup Router
 	// ========================================================================
 
 	r := router.SetupRouter(proofHandler, logger)
 
 	// ========================================================================
-	// Step 7: Create HTTP Server
+	// Step 9: Create HTTP Server
 	// ========================================================================
 
 	srv := &http.Server{
@@ -121,7 +166,7 @@ func main() {
 	}
 
 	// ========================================================================
-	// Step 8: Start Server in Goroutine
+	// Step 10: Start Server in Goroutine
 	// ========================================================================
 
 	go func() {
@@ -140,7 +185,7 @@ func main() {
 	)
 
 	// ========================================================================
-	// Step 9: Graceful Shutdown
+	// Step 11: Graceful Shutdown
 	// ========================================================================
 
 	// Wait for interrupt signal

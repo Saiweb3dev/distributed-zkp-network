@@ -14,6 +14,7 @@ import (
 type Config struct {
 	Server    ServerConfig    `mapstructure:"server"`
 	Database  DatabaseConfig  `mapstructure:"database"`
+	Redis     RedisConfig     `mapstructure:"redis"`
 	Logging   LoggingConfig   `mapstructure:"logging"`
 	Metrics   MetricsConfig   `mapstructure:"metrics"`
 	ZKP       ZKPConfig       `mapstructure:"zkp"`
@@ -33,6 +34,7 @@ type WorkerConfig struct {
 type CoordinatorConfig struct {
 	Coordinator CoordinatorNodeConfig `mapstructure:"coordinator"`
 	Database    DatabaseConfig        `mapstructure:"database"`
+	Redis       RedisConfig           `mapstructure:"redis"`
 	Logging     LoggingConfig         `mapstructure:"logging"`
 	Metrics     MetricsConfig         `mapstructure:"metrics"`
 }
@@ -59,6 +61,35 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`    // Max connections in pool
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`    // Idle connections to keep
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"` // Max connection lifetime
+}
+
+// RedisConfig defines Redis connection settings for both event bus and caching
+// Redis is used for:
+// 1. Event Bus (Pub/Sub) - Real-time event-driven architecture
+// 2. Caching - Future use for performance optimization
+type RedisConfig struct {
+	Host     string `mapstructure:"host"`     // Redis server host
+	Port     int    `mapstructure:"port"`     // Redis server port
+	Password string `mapstructure:"password"` // Redis password (empty for no auth)
+	DB       int    `mapstructure:"db"`       // Redis database number (0-15)
+
+	// Connection pool settings
+	MaxRetries   int `mapstructure:"max_retries"`    // Max retry attempts for failed operations
+	PoolSize     int `mapstructure:"pool_size"`      // Max number of socket connections
+	MinIdleConns int `mapstructure:"min_idle_conns"` // Minimum idle connections
+
+	// Timeouts
+	DialTimeout  time.Duration `mapstructure:"dial_timeout"`  // Timeout for establishing connection
+	ReadTimeout  time.Duration `mapstructure:"read_timeout"`  // Timeout for socket reads
+	WriteTimeout time.Duration `mapstructure:"write_timeout"` // Timeout for socket writes
+	PoolTimeout  time.Duration `mapstructure:"pool_timeout"`  // Timeout when all connections are busy
+
+	// Feature flags
+	Enabled        bool `mapstructure:"enabled"`         // Enable Redis (graceful degradation if false)
+	CachingEnabled bool `mapstructure:"caching_enabled"` // Enable caching features (future use)
+
+	// Caching configuration (future use)
+	DefaultTTL time.Duration `mapstructure:"default_ttl"` // Default cache expiration time
 }
 
 // WorkerNodeConfig defines worker node settings
@@ -208,6 +239,22 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 
+	// Redis defaults (Event Bus + Caching)
+	v.SetDefault("redis.host", "localhost")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.max_retries", 3)
+	v.SetDefault("redis.pool_size", 10)
+	v.SetDefault("redis.min_idle_conns", 5)
+	v.SetDefault("redis.dial_timeout", "5s")
+	v.SetDefault("redis.read_timeout", "3s")
+	v.SetDefault("redis.write_timeout", "3s")
+	v.SetDefault("redis.pool_timeout", "4s")
+	v.SetDefault("redis.enabled", true)
+	v.SetDefault("redis.caching_enabled", false) // Disabled by default, enable when implementing caching
+	v.SetDefault("redis.default_ttl", "5m")
+
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
@@ -269,6 +316,31 @@ func (c *Config) Validate() error {
 	}
 	if c.Database.MaxIdleConns < 0 {
 		return fmt.Errorf("max_idle_conns cannot be negative")
+	}
+
+	// Redis validation (only if enabled)
+	if c.Redis.Enabled {
+		if c.Redis.Host == "" {
+			return fmt.Errorf("redis host cannot be empty when redis is enabled")
+		}
+		if c.Redis.Port < 1 || c.Redis.Port > 65535 {
+			return fmt.Errorf("invalid redis port: %d", c.Redis.Port)
+		}
+		if c.Redis.DB < 0 || c.Redis.DB > 15 {
+			return fmt.Errorf("redis db must be between 0 and 15")
+		}
+		if c.Redis.MaxRetries < 0 {
+			return fmt.Errorf("redis max_retries cannot be negative")
+		}
+		if c.Redis.PoolSize < 1 {
+			return fmt.Errorf("redis pool_size must be at least 1")
+		}
+		if c.Redis.MinIdleConns < 0 {
+			return fmt.Errorf("redis min_idle_conns cannot be negative")
+		}
+		if c.Redis.DialTimeout < time.Second {
+			return fmt.Errorf("redis dial_timeout must be at least 1 second")
+		}
 	}
 
 	// Logging validation
@@ -334,6 +406,11 @@ func (c *Config) GetMetricsAddress() string {
 // Based on log level - production should use info or higher
 func (c *Config) IsProduction() bool {
 	return c.Logging.Level != "debug"
+}
+
+// GetRedisAddress returns the Redis server address
+func (c *Config) GetRedisAddress() string {
+	return fmt.Sprintf("%s:%d", c.Redis.Host, c.Redis.Port)
 }
 
 // ============================================================================
@@ -514,6 +591,22 @@ func setCoordinatorDefaults(v *viper.Viper) {
 	v.SetDefault("database.max_idle_conns", 5)
 	v.SetDefault("database.conn_max_lifetime", "5m")
 
+	// Redis defaults (Event Bus + Caching)
+	v.SetDefault("redis.host", "localhost")
+	v.SetDefault("redis.port", 6379)
+	v.SetDefault("redis.password", "")
+	v.SetDefault("redis.db", 0)
+	v.SetDefault("redis.max_retries", 3)
+	v.SetDefault("redis.pool_size", 10)
+	v.SetDefault("redis.min_idle_conns", 5)
+	v.SetDefault("redis.dial_timeout", "5s")
+	v.SetDefault("redis.read_timeout", "3s")
+	v.SetDefault("redis.write_timeout", "3s")
+	v.SetDefault("redis.pool_timeout", "4s")
+	v.SetDefault("redis.enabled", true)
+	v.SetDefault("redis.caching_enabled", false)
+	v.SetDefault("redis.default_ttl", "5m")
+
 	// Logging defaults
 	v.SetDefault("logging.level", "info")
 	v.SetDefault("logging.format", "json")
@@ -555,6 +648,19 @@ func (c *CoordinatorConfig) Validate() error {
 		return fmt.Errorf("database name cannot be empty")
 	}
 
+	// Redis validation (only if enabled)
+	if c.Redis.Enabled {
+		if c.Redis.Host == "" {
+			return fmt.Errorf("redis host cannot be empty when redis is enabled")
+		}
+		if c.Redis.Port < 1 || c.Redis.Port > 65535 {
+			return fmt.Errorf("invalid redis port: %d", c.Redis.Port)
+		}
+		if c.Redis.DB < 0 || c.Redis.DB > 15 {
+			return fmt.Errorf("redis db must be between 0 and 15")
+		}
+	}
+
 	// Logging validation
 	validLogLevels := map[string]bool{"debug": true, "info": true, "warn": true, "error": true}
 	if !validLogLevels[c.Logging.Level] {
@@ -585,4 +691,9 @@ func (c *CoordinatorConfig) GetGRPCAddress() string {
 // GetHTTPAddress returns the HTTP API address
 func (c *CoordinatorConfig) GetHTTPAddress() string {
 	return fmt.Sprintf(":%d", c.Coordinator.HTTPPort)
+}
+
+// GetRedisAddress returns the Redis server address for coordinator
+func (c *CoordinatorConfig) GetRedisAddress() string {
+	return fmt.Sprintf("%s:%d", c.Redis.Host, c.Redis.Port)
 }

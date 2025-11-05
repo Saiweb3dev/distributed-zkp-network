@@ -14,6 +14,7 @@ import (
 	"github.com/hashicorp/raft"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
 	coordinatorRaft "github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/scheduler"
@@ -109,7 +110,49 @@ func main() {
 	)
 
 	// ========================================================================
-	// STEP 5: Initialize Data Access Layer (Repositories)
+	// STEP 5: Initialize Redis Event Bus
+	// ========================================================================
+	var eventBus *events.EventBus
+
+	if cfg.Redis.Enabled {
+		logger.Info("Initializing Redis Event Bus",
+			zap.String("host", cfg.Redis.Host),
+			zap.Int("port", cfg.Redis.Port),
+			zap.Bool("caching_enabled", cfg.Redis.CachingEnabled),
+		)
+
+		eventBusConfig := events.EventBusConfig{
+			Host:         cfg.Redis.Host,
+			Port:         cfg.Redis.Port,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			MaxRetries:   cfg.Redis.MaxRetries,
+			PoolSize:     cfg.Redis.PoolSize,
+			MinIdleConns: cfg.Redis.MinIdleConns,
+			DialTimeout:  cfg.Redis.DialTimeout,
+			ReadTimeout:  cfg.Redis.ReadTimeout,
+			WriteTimeout: cfg.Redis.WriteTimeout,
+			Enabled:      cfg.Redis.Enabled,
+		}
+
+		var err error
+		eventBus, err = events.NewEventBus(eventBusConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize event bus, continuing with polling only",
+				zap.Error(err),
+			)
+			eventBus = events.NewDisabledEventBus(logger)
+		} else {
+			logger.Info("Event bus initialized successfully")
+			defer eventBus.Close()
+		}
+	} else {
+		logger.Info("Redis event bus disabled in configuration")
+		eventBus = events.NewDisabledEventBus(logger)
+	}
+
+	// ========================================================================
+	// STEP 6: Initialize Data Access Layer (Repositories)
 	// ========================================================================
 	taskRepo := postgres.NewTaskRepository(db)
 	workerRepo := postgres.NewWorkerRepository(db)
@@ -209,12 +252,14 @@ func main() {
 	logger.Info("Initializing task scheduler",
 		zap.Duration("poll_interval", cfg.Coordinator.PollInterval),
 		zap.Duration("stale_task_timeout", cfg.Coordinator.StaleTaskTimeout),
+		zap.Bool("event_driven_enabled", eventBus.IsEnabled()),
 	)
 
 	taskScheduler := scheduler.NewTaskScheduler(
 		taskRepo,
 		workerRegistry,
 		raftNode,
+		eventBus,
 		cfg.Coordinator.PollInterval,
 		logger,
 	)

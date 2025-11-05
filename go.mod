@@ -10,8 +10,9 @@ require (
 	github.com/google/uuid v1.3.1
 	github.com/gorilla/mux v1.8.1
 	github.com/hashicorp/raft v1.7.3
-	github.com/hashicorp/raft-boltdb v0.0.0-20250926130943-f41fa5f23d89
+	github.com/hashicorp/raft-boltdb v0.0.0-20251103221153-05f9dd7a5148
 	github.com/lib/pq v1.10.9
+	github.com/redis/go-redis/v9 v9.16.0
 	github.com/spf13/viper v1.18.2
 	go.uber.org/zap v1.26.0
 	google.golang.org/grpc v1.59.0
@@ -23,8 +24,10 @@ require (
 	github.com/bits-and-blooms/bitset v1.8.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/boltdb/bolt v1.3.1 // indirect
+	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/consensys/bavard v0.2.1 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/fatih/color v1.14.1 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.5.0 // indirect

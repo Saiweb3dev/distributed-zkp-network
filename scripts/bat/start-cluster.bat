@@ -44,7 +44,22 @@ echo.
 echo [4/5] Building Docker images...
 docker-compose -f deployments/docker/docker-compose-cluster.yml build
 if %errorlevel% neq 0 (
-    echo Error: Failed to build images
+    echo.
+    echo ======================================
+    echo BUILD ERROR DETECTED
+    echo ======================================
+    echo.
+    echo This is likely a Docker BuildKit cache issue.
+    echo.
+    echo Solution:
+    echo   1. Run: scripts\bat\clean-docker.bat
+    echo   2. Then run this script again
+    echo.
+    echo Or manually:
+    echo   docker builder prune -f
+    echo   docker system prune -f
+    echo   docker-compose -f deployments/docker/docker-compose-cluster.yml build --no-cache
+    echo.
     exit /b 1
 )
 echo [OK] Images built successfully

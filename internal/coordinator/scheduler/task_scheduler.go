@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
@@ -19,6 +20,7 @@ type TaskScheduler struct {
 	taskRepo       postgres.TaskRepository
 	workerRegistry *registry.WorkerRegistry
 	raftNode       *raft.RaftNode
+	eventBus       *events.EventBus
 	logger         *zap.Logger
 
 	pollInterval  time.Duration
@@ -35,6 +37,7 @@ type SchedulerMetrics struct {
 	TasksAssigned     int64
 	AssignmentsFailed int64
 	PollCycles        int64
+	EventTriggered    int64
 	LastAssignmentAt  time.Time
 }
 
@@ -45,6 +48,7 @@ func NewTaskScheduler(
 	taskRepo postgres.TaskRepository,
 	workerRegistry *registry.WorkerRegistry,
 	raftNode *raft.RaftNode,
+	eventBus *events.EventBus,
 	pollInterval time.Duration,
 	logger *zap.Logger,
 ) *TaskScheduler {
@@ -54,6 +58,7 @@ func NewTaskScheduler(
 		taskRepo:       taskRepo,
 		workerRegistry: workerRegistry,
 		raftNode:       raftNode,
+		eventBus:       eventBus,
 		logger:         logger,
 		pollInterval:   pollInterval,
 		assignTimeout:  time.Second * 5,
@@ -68,8 +73,15 @@ func NewTaskScheduler(
 func (ts *TaskScheduler) Start() {
 	ts.logger.Info("Starting task scheduler",
 		zap.Duration("poll_interval", ts.pollInterval),
+		zap.Bool("event_driven", ts.eventBus.IsEnabled()),
 	)
 
+	// Start event-driven listener if Redis is available
+	if ts.eventBus.IsEnabled() {
+		go ts.eventDrivenLoop()
+	}
+
+	// Always keep polling as fallback (but less frequent)
 	go ts.schedulingLoop()
 }
 
@@ -78,6 +90,51 @@ func (ts *TaskScheduler) Start() {
 func (ts *TaskScheduler) Stop() {
 	ts.logger.Info("Stopping task scheduler")
 	ts.cancel()
+}
+
+// eventDrivenLoop listens for task creation events from Redis
+// This provides near-instant task scheduling instead of waiting for polling
+func (ts *TaskScheduler) eventDrivenLoop() {
+	ts.logger.Info("Starting event-driven scheduling loop")
+
+	// Subscribe to task creation events
+	eventChan, err := ts.eventBus.Subscribe(ts.ctx, events.EventTaskCreated)
+	if err != nil {
+		ts.logger.Error("Failed to subscribe to events", zap.Error(err))
+		return
+	}
+
+	for {
+		select {
+		case event, ok := <-eventChan:
+			if !ok {
+				ts.logger.Info("Event channel closed")
+				return
+			}
+
+			// Only process if this node is the leader
+			if !ts.raftNode.IsLeader() {
+				ts.logger.Debug("Skipping event (not leader)")
+				continue
+			}
+
+			ts.metrics.EventTriggered++
+
+			ts.logger.Debug("Event received: new task created",
+				zap.String("type", string(event.Type)),
+				zap.Any("data", event.Data),
+			)
+
+			// Process immediately!
+			if err := ts.scheduleOneCycle(); err != nil {
+				ts.logger.Error("Event-driven schedule failed", zap.Error(err))
+			}
+
+		case <-ts.ctx.Done():
+			ts.logger.Info("Event-driven loop terminated")
+			return
+		}
+	}
 }
 
 // schedulingLoop is the main control flow that runs continuously on the leader
