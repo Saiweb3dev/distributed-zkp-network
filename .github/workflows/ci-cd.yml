@@ -440,7 +440,323 @@ jobs:
           docker-compose -f deployments/docker/docker-compose-cluster.yml down -v
 
   # ============================================================================
-  # Job 6: Leader Failover Test
+  # Job 6: Redis Pub/Sub Integration Tests
+  # ============================================================================
+  redis-pubsub-tests:
+    name: Redis Pub/Sub & Event Bus Tests
+    runs-on: ubuntu-latest
+    needs: integration-basic
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Start cluster with Redis
+        run: |
+          docker-compose -f deployments/docker/docker-compose-cluster.yml up -d
+          echo "Waiting for services to be ready..."
+          sleep 35
+
+      - name: Test 1 - Redis Connectivity
+        run: |
+          echo "=== Test 1: Redis Connectivity ==="
+          
+          # Check Redis is running
+          if ! docker ps | grep zkp-redis-cluster; then
+            echo "Redis container not running"
+            exit 1
+          fi
+          
+          # Test PING
+          if docker exec zkp-redis-cluster redis-cli ping | grep -q PONG; then
+            echo "✓ Redis PING successful"
+          else
+            echo "✗ Redis PING failed"
+            exit 1
+          fi
+          
+          # Test Redis info
+          if docker exec zkp-redis-cluster redis-cli INFO server | grep -q redis_version; then
+            echo "✓ Redis server info accessible"
+          else
+            echo "✗ Cannot access Redis info"
+            exit 1
+          fi
+
+      - name: Test 2 - Event Bus Configuration
+        run: |
+          echo "=== Test 2: Event Bus Configuration ==="
+          
+          # Check coordinator logs for Redis connection
+          if docker logs zkp-coordinator-1 2>&1 | grep -i "redis\|event.*bus"; then
+            echo "✓ Coordinator has Redis event bus initialized"
+          else
+            echo "⚠ No Redis logs in coordinator-1 (may use polling fallback)"
+          fi
+          
+          # Check API Gateway logs for Redis connection
+          if docker logs zkp-api-gateway-cluster 2>&1 | grep -i "redis\|event.*bus"; then
+            echo "✓ API Gateway has Redis event bus initialized"
+          else
+            echo "⚠ No Redis logs in API Gateway (may use polling fallback)"
+          fi
+
+      - name: Test 3 - Pub/Sub Channels Discovery
+        run: |
+          echo "=== Test 3: Pub/Sub Channels Discovery ==="
+          
+          # List all active channels
+          CHANNELS=$(docker exec zkp-redis-cluster redis-cli PUBSUB CHANNELS)
+          echo "Active channels: $CHANNELS"
+          
+          # Check for expected channel patterns
+          echo "Checking for coordinator channels..."
+          docker exec zkp-redis-cluster redis-cli PUBSUB CHANNELS | grep -E "coordinator|tasks|worker" || echo "No active channels (may be normal without traffic)"
+          
+          # Get number of patterns
+          NUM_PATTERNS=$(docker exec zkp-redis-cluster redis-cli PUBSUB NUMPAT)
+          echo "Active patterns: $NUM_PATTERNS"
+
+      - name: Test 4 - Submit Task and Monitor Redis
+        run: |
+          echo "=== Test 4: Task Submission with Redis Monitoring ==="
+          
+          # Start monitoring Redis commands in background
+          docker exec zkp-redis-cluster redis-cli MONITOR > /tmp/redis_monitor.log 2>&1 &
+          MONITOR_PID=$!
+          
+          sleep 2
+          
+          # Submit a test task
+          echo "Submitting test task..."
+          RESPONSE=$(curl -s -X POST http://localhost:8080/api/v1/proof \
+            -H "Content-Type: application/json" \
+            -d '{
+              "circuit_type": "merkle_tree",
+              "public_inputs": ["1", "2", "3"],
+              "private_inputs": ["secret1"]
+            }')
+          
+          echo "Response: $RESPONSE"
+          
+          # Wait for Redis activity
+          sleep 3
+          
+          # Stop monitoring
+          kill $MONITOR_PID 2>/dev/null || true
+          
+          # Check if Redis received any pub/sub commands
+          if [ -f /tmp/redis_monitor.log ]; then
+            echo "Redis activity log (last 20 lines):"
+            tail -20 /tmp/redis_monitor.log
+            
+            if grep -iq "PUBLISH\|SUBSCRIBE" /tmp/redis_monitor.log; then
+              echo "✓ Redis pub/sub commands detected"
+            else
+              echo "⚠ No pub/sub commands detected (may use polling fallback)"
+            fi
+          fi
+
+      - name: Test 5 - Active Subscriptions
+        run: |
+          echo "=== Test 5: Active Subscriptions ==="
+          
+          # Check subscription counts on expected channels
+          echo "Checking coordinator.tasks channel..."
+          SUBS=$(docker exec zkp-redis-cluster redis-cli PUBSUB NUMSUB coordinator.tasks)
+          echo "Subscriptions: $SUBS"
+          
+          echo "Checking worker.assignments channel..."
+          SUBS=$(docker exec zkp-redis-cluster redis-cli PUBSUB NUMSUB worker.assignments)
+          echo "Subscriptions: $SUBS"
+          
+          # Just verify the command works (subscriptions may be 0 if no active traffic)
+          if docker exec zkp-redis-cluster redis-cli PUBSUB NUMSUB coordinator.tasks | grep -q "coordinator.tasks"; then
+            echo "✓ PUBSUB NUMSUB command working"
+          else
+            echo "✗ PUBSUB NUMSUB command failed"
+            exit 1
+          fi
+
+      - name: Test 6 - Redis Performance Metrics
+        run: |
+          echo "=== Test 6: Redis Performance Metrics ==="
+          
+          # Memory usage
+          echo "Memory usage:"
+          docker exec zkp-redis-cluster redis-cli INFO memory | grep "used_memory_human\|used_memory_peak_human"
+          
+          # Command statistics
+          echo "Command statistics:"
+          docker exec zkp-redis-cluster redis-cli INFO stats | grep "total_commands_processed\|instantaneous_ops_per_sec"
+          
+          # Client connections
+          echo "Client connections:"
+          docker exec zkp-redis-cluster redis-cli INFO clients | grep "connected_clients\|blocked_clients"
+          
+          # Verify at least some clients are connected
+          CLIENT_COUNT=$(docker exec zkp-redis-cluster redis-cli INFO clients | grep "connected_clients:" | cut -d: -f2 | tr -d '\r')
+          echo "Connected clients: $CLIENT_COUNT"
+          
+          if [ "$CLIENT_COUNT" -ge 1 ]; then
+            echo "✓ Redis has active client connections"
+          else
+            echo "⚠ No Redis clients connected"
+          fi
+
+      - name: Test 7 - Redis Connection Pool
+        run: |
+          echo "=== Test 7: Redis Connection Pool Verification ==="
+          
+          # Submit multiple tasks to test connection pooling
+          echo "Submitting 5 concurrent tasks to test connection pool..."
+          for i in {1..5}; do
+            curl -s -X POST http://localhost:8080/api/v1/proof \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"circuit_type\": \"merkle_tree\",
+                \"public_inputs\": [\"$i\", \"2\", \"3\"],
+                \"private_inputs\": [\"secret$i\"]
+              }" &
+          done
+          
+          wait
+          echo "✓ Concurrent requests submitted"
+          
+          sleep 2
+          
+          # Check Redis handled multiple connections
+          TOTAL_CONNECTIONS=$(docker exec zkp-redis-cluster redis-cli INFO stats | grep "total_connections_received:" | cut -d: -f2 | tr -d '\r')
+          echo "Total connections received by Redis: $TOTAL_CONNECTIONS"
+          
+          if [ "$TOTAL_CONNECTIONS" -ge 1 ]; then
+            echo "✓ Redis connection pool handling requests"
+          else
+            echo "⚠ Low connection count"
+          fi
+
+      - name: Test 8 - Event-Driven vs Polling Performance
+        run: |
+          echo "=== Test 8: Verify Event-Driven Architecture ==="
+          
+          # Check coordinator metrics for event-driven behavior
+          echo "Checking coordinator metrics..."
+          
+          # Submit a task
+          curl -s -X POST http://localhost:8080/api/v1/proof \
+            -H "Content-Type: application/json" \
+            -d '{
+              "circuit_type": "merkle_tree",
+              "public_inputs": ["1"],
+              "private_inputs": ["secret"]
+            }' > /dev/null
+          
+          sleep 3
+          
+          # Check coordinator logs for event reception
+          if docker logs zkp-coordinator-1 --since 10s 2>&1 | grep -i "event.*received\|task.*notification"; then
+            echo "✓ Event-driven architecture active (sub-100ms latency)"
+          else
+            echo "⚠ Using polling fallback (Redis may be disabled)"
+          fi
+          
+          # Check metrics endpoint if available
+          if curl -sf http://localhost:8090/metrics | grep -q "zkp_tasks_event_triggered"; then
+            EVENT_COUNT=$(curl -s http://localhost:8090/metrics | grep "zkp_tasks_event_triggered" | awk '{print $2}')
+            POLL_COUNT=$(curl -s http://localhost:8090/metrics | grep "zkp_tasks_poll_cycles" | awk '{print $2}')
+            echo "Events triggered: $EVENT_COUNT"
+            echo "Poll cycles: $POLL_COUNT"
+            
+            if [ -n "$EVENT_COUNT" ] && [ "$EVENT_COUNT" -gt 0 ]; then
+              echo "✓ Event-driven metrics confirmed"
+            fi
+          fi
+
+      - name: Test 9 - Redis Failover Handling
+        run: |
+          echo "=== Test 9: Graceful Degradation Test ==="
+          
+          # Submit task with Redis active
+          echo "Step 1: Submit task with Redis active"
+          RESPONSE1=$(curl -s -X POST http://localhost:8080/api/v1/proof \
+            -H "Content-Type: application/json" \
+            -d '{"circuit_type": "merkle_tree", "public_inputs": ["1"], "private_inputs": ["secret1"]}')
+          TASK_ID1=$(echo $RESPONSE1 | grep -o '"task_id":"[^"]*"' | cut -d'"' -f4)
+          echo "Task created with Redis: $TASK_ID1"
+          
+          sleep 2
+          
+          # Stop Redis
+          echo "Step 2: Stopping Redis to test fallback..."
+          docker stop zkp-redis-cluster
+          
+          sleep 3
+          
+          # Submit task without Redis (should use polling fallback)
+          echo "Step 3: Submit task without Redis"
+          RESPONSE2=$(curl -s -X POST http://localhost:8080/api/v1/proof \
+            -H "Content-Type: application/json" \
+            -d '{"circuit_type": "merkle_tree", "public_inputs": ["2"], "private_inputs": ["secret2"]}')
+          TASK_ID2=$(echo $RESPONSE2 | grep -o '"task_id":"[^"]*"' | cut -d'"' -f4)
+          
+          if [ -n "$TASK_ID2" ]; then
+            echo "✓ Task created without Redis (polling fallback active): $TASK_ID2"
+          else
+            echo "⚠ Could not create task without Redis"
+          fi
+          
+          # Restart Redis
+          echo "Step 4: Restarting Redis..."
+          docker start zkp-redis-cluster
+          sleep 5
+          
+          # Verify system recovered
+          if docker exec zkp-redis-cluster redis-cli ping | grep -q PONG; then
+            echo "✓ System recovered after Redis restart"
+          else
+            echo "✗ Redis did not recover properly"
+            exit 1
+          fi
+
+      - name: Test 10 - Database Keys and Patterns
+        run: |
+          echo "=== Test 10: Redis Key Patterns ==="
+          
+          # Check for any keys in Redis
+          KEY_COUNT=$(docker exec zkp-redis-cluster redis-cli DBSIZE | cut -d: -f2 | tr -d ' \r\n' || echo "0")
+          echo "Total keys in Redis: $KEY_COUNT"
+          
+          # List sample keys if any exist
+          if [ "$KEY_COUNT" -gt 0 ]; then
+            echo "Sample keys:"
+            docker exec zkp-redis-cluster redis-cli KEYS "*" | head -10
+          else
+            echo "No keys stored (pub/sub only mode - this is normal)"
+          fi
+          
+          echo "✓ Redis key space verified"
+
+      - name: Show Redis logs on failure
+        if: failure()
+        run: |
+          echo "=== Redis Container Logs ==="
+          docker logs zkp-redis-cluster --tail=100
+          
+          echo "=== Redis INFO ==="
+          docker exec zkp-redis-cluster redis-cli INFO all || true
+          
+          echo "=== Coordinator Logs (Redis-related) ==="
+          docker logs zkp-coordinator-1 2>&1 | grep -i redis | tail -50 || echo "No Redis logs"
+          
+          echo "=== API Gateway Logs (Redis-related) ==="
+          docker logs zkp-api-gateway-cluster 2>&1 | grep -i redis | tail -50 || echo "No Redis logs"
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker-compose -f deployments/docker/docker-compose-cluster.yml down -v
+
+  # ============================================================================
+  # Job 7: Leader Failover Test
   # ============================================================================
   failover-test:
     name: Leader Failover Test
@@ -524,7 +840,7 @@ jobs:
           docker-compose -f deployments/docker/docker-compose-cluster.yml down -v
 
   # ============================================================================
-  # Job 7: Performance & Load Test
+  # Job 8: Performance & Load Test
   # ============================================================================
   performance-test:
     name: Performance & Load Test

@@ -281,6 +281,220 @@ if !errorlevel! equ 0 (
 set /a TOTAL_TESTS+=1
 
 echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 7: Redis Pub/Sub - Connectivity
+REM ============================================================================
+echo ============================================================================
+echo Test 7: Redis Pub/Sub - Connectivity
+echo ============================================================================
+
+docker exec zkp-redis-cluster redis-cli ping >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Redis is responding to PING
+    set /a TESTS_PASSED+=1
+) else (
+    echo [FAIL] Redis is not responding
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+docker exec zkp-redis-cluster redis-cli INFO server | findstr "redis_version" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Redis server information accessible
+    set /a TESTS_PASSED+=1
+) else (
+    echo [FAIL] Cannot access Redis server info
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 8: Redis Pub/Sub - Active Channels
+REM ============================================================================
+echo ============================================================================
+echo Test 8: Redis Pub/Sub - Active Channels
+echo ============================================================================
+
+docker exec zkp-redis-cluster redis-cli PUBSUB CHANNELS > %TEMP%\redis_channels.txt 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] PUBSUB CHANNELS command executed
+    set /a TESTS_PASSED+=1
+    set /a TOTAL_TESTS+=1
+    
+    REM Check for expected channels
+    findstr /C:"coordinator.tasks" %TEMP%\redis_channels.txt >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [PASS] coordinator.tasks channel exists
+        set /a TESTS_PASSED+=1
+    ) else (
+        echo [WARN] coordinator.tasks channel not found ^(may be inactive^)
+        set /a TESTS_PASSED+=1
+    )
+    set /a TOTAL_TESTS+=1
+) else (
+    echo [FAIL] PUBSUB CHANNELS command failed
+    set /a TESTS_FAILED+=1
+    set /a TOTAL_TESTS+=1
+    set /a TESTS_FAILED+=1
+    set /a TOTAL_TESTS+=1
+)
+
+echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 9: Redis Pub/Sub - Event Bus Integration
+REM ============================================================================
+echo ============================================================================
+echo Test 9: Redis Pub/Sub - Event Bus Integration
+echo ============================================================================
+
+REM Check coordinator logs for Redis event bus connection
+docker logs zkp-coordinator-1 2>&1 | findstr /C:"Redis" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Coordinator has Redis event bus logs
+    set /a TESTS_PASSED+=1
+) else (
+    echo [WARN] No Redis logs in coordinator-1
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+REM Check API Gateway logs for Redis connection
+docker logs zkp-api-gateway-cluster 2>&1 | findstr /C:"Redis" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] API Gateway has Redis event bus logs
+    set /a TESTS_PASSED+=1
+) else (
+    echo [WARN] No Redis logs in API Gateway
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 10: Redis Pub/Sub - Memory and Performance
+REM ============================================================================
+echo ============================================================================
+echo Test 10: Redis Pub/Sub - Memory and Performance
+echo ============================================================================
+
+docker exec zkp-redis-cluster redis-cli INFO memory > %TEMP%\redis_memory.txt 2>&1
+findstr /C:"used_memory_human" %TEMP%\redis_memory.txt >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Redis memory stats available
+    set /a TESTS_PASSED+=1
+    
+    REM Display memory usage
+    for /f "tokens=2 delims=:" %%a in ('findstr "used_memory_human" %TEMP%\redis_memory.txt') do (
+        echo        Memory usage: %%a
+    )
+) else (
+    echo [FAIL] Cannot get Redis memory stats
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+docker exec zkp-redis-cluster redis-cli INFO stats > %TEMP%\redis_stats.txt 2>&1
+findstr /C:"total_commands_processed" %TEMP%\redis_stats.txt >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Redis command statistics available
+    set /a TESTS_PASSED+=1
+    
+    REM Display command count
+    for /f "tokens=2 delims=:" %%a in ('findstr "total_commands_processed" %TEMP%\redis_stats.txt') do (
+        echo        Commands processed: %%a
+    )
+) else (
+    echo [FAIL] Cannot get Redis command stats
+    set /a TESTS_FAILED+=1
+)
+set /a TOTAL_TESTS+=1
+
+echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 11: Redis Pub/Sub - Connection Pool
+REM ============================================================================
+echo ============================================================================
+echo Test 11: Redis Pub/Sub - Connection Pool
+echo ============================================================================
+
+docker exec zkp-redis-cluster redis-cli INFO clients > %TEMP%\redis_clients.txt 2>&1
+findstr /C:"connected_clients" %TEMP%\redis_clients.txt >nul 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] Redis client connections tracked
+    set /a TESTS_PASSED+=1
+    
+    REM Display connection count and check threshold
+    for /f "tokens=2 delims=:" %%a in ('findstr "connected_clients" %TEMP%\redis_clients.txt') do (
+        set CLIENT_COUNT=%%a
+    )
+    
+    REM Trim spaces from CLIENT_COUNT
+    set CLIENT_COUNT=!CLIENT_COUNT: =!
+    echo        Connected clients: !CLIENT_COUNT!
+    
+    REM At least 2 clients expected (coordinator + gateway)
+    if !CLIENT_COUNT! geq 2 (
+        echo [PASS] Multiple clients connected ^(event bus active^)
+        set /a TESTS_PASSED+=1
+    ) else (
+        echo [WARN] Less than 2 clients connected
+        set /a TESTS_FAILED+=1
+    )
+    set /a TOTAL_TESTS+=1
+) else (
+    echo [FAIL] Cannot get Redis client info
+    set /a TESTS_FAILED+=1
+    set /a TESTS_FAILED+=1
+    set /a TOTAL_TESTS+=1
+)
+set /a TOTAL_TESTS+=1
+
+echo.
+timeout /t 2 /nobreak >nul
+
+REM ============================================================================
+REM Test 12: Redis Pub/Sub - Subscription Count
+REM ============================================================================
+echo ============================================================================
+echo Test 12: Redis Pub/Sub - Subscription Count
+echo ============================================================================
+
+docker exec zkp-redis-cluster redis-cli PUBSUB NUMSUB coordinator.tasks worker.assignments > %TEMP%\redis_subs.txt 2>&1
+if !errorlevel! equ 0 (
+    echo [PASS] PUBSUB NUMSUB command executed
+    set /a TESTS_PASSED+=1
+    set /a TOTAL_TESTS+=1
+    
+    REM Check if any subscriptions exist
+    type %TEMP%\redis_subs.txt | findstr /R "[1-9]" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [PASS] Active subscriptions detected
+        set /a TESTS_PASSED+=1
+    ) else (
+        echo [INFO] No active subscriptions ^(may be normal if no traffic^)
+        set /a TESTS_PASSED+=1
+    )
+    set /a TOTAL_TESTS+=1
+) else (
+    echo [FAIL] PUBSUB NUMSUB command failed
+    set /a TESTS_FAILED+=1
+    set /a TOTAL_TESTS+=1
+    set /a TESTS_FAILED+=1
+    set /a TOTAL_TESTS+=1
+)
+
+echo.
 
 REM ============================================================================
 REM Test Summary

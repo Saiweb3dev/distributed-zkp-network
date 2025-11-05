@@ -424,6 +424,13 @@ test-e2e-redis: test-redis test-events test-load redis-stats
 	@echo ""
 	@echo "$(COLOR_GREEN)✓✓✓ All Redis integration tests passed! ✓✓✓$(COLOR_RESET)"
 
+## test-redis-pubsub: Comprehensive Redis Pub/Sub integration test
+test-redis-pubsub:
+	@echo "$(COLOR_BLUE)Running comprehensive Redis Pub/Sub tests...$(COLOR_RESET)"
+	@chmod +x scripts/sh/test-redis-pubsub.sh
+	@bash scripts/sh/test-redis-pubsub.sh
+	@echo "$(COLOR_GREEN)✓ Redis Pub/Sub tests complete$(COLOR_RESET)"
+
 # ============================================================================
 clean-volumes:
 	@echo "$(COLOR_YELLOW)Removing Docker volumes...$(COLOR_RESET)"
