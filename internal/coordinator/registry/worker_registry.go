@@ -448,7 +448,7 @@ func (wr *WorkerRegistry) loadWorkersFromDB() error {
 	wr.logger.Info("Loaded workers from database",
 		zap.Int("count", len(workers)),
 	)
-	
+
 	return nil
 }
 

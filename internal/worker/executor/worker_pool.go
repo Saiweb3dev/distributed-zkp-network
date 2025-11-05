@@ -20,42 +20,42 @@ import (
 // Task represents a proof generation request with all necessary inputs
 // This structure is created from the database task r
 type Task struct {
-	ID string
+	ID          string
 	CircuitType string
-	InputData map[string]interface{}
-	CreatedAt time.Time
+	InputData   map[string]interface{}
+	CreatedAt   time.Time
 }
 
 // TaskResult contains the outcome of proof generation
 // Success indicates whether the proof was generated without errors
 // The proof data and metadata are populated only on success
 type TaskResult struct {
-	TaskID string
-	Success bool
-	ProofData []byte
+	TaskID        string
+	Success       bool
+	ProofData     []byte
 	ProofMetadata map[string]interface{}
-	MerkleRoot string
-	Error error
-	Duration time.Duration
+	MerkleRoot    string
+	Error         error
+	Duration      time.Duration
 }
 
 // WorkerPool manages a fixed number of goroutines that process tasks concurrently
 // The pool prevents resource exhaustion by limiting concurrency to available CPU cores
 type WorkerPool struct {
-	prover zkp.Prover
+	prover         zkp.Prover
 	circuitFactory *circuits.CircuitFactory
-	concurrency int
-	logger *zap.Logger
+	concurrency    int
+	logger         *zap.Logger
 
-	tasks chan Task
+	tasks   chan Task
 	results chan TaskResult
 
-	wg sync.WaitGroup
-	ctx context.Context
+	wg     sync.WaitGroup
+	ctx    context.Context
 	cancel context.CancelFunc
 
 	activeWorkers int
-	mu sync.Mutex
+	mu            sync.Mutex
 }
 
 // NewWorkerPool creates a pool with the specified concurrency level
@@ -69,15 +69,15 @@ func NewWorkerPool(prover zkp.Prover, concurrency int, logger *zap.Logger) *Work
 	ctx, cancel := context.WithCancel(context.Background())
 
 	return &WorkerPool{
-		prover: prover,
+		prover:         prover,
 		circuitFactory: circuits.NewCircuitFactory(),
-		concurrency: concurrency,
-		logger: logger,
+		concurrency:    concurrency,
+		logger:         logger,
 
-		tasks: make(chan Task, concurrency*2),  // Buffer prevents blocking
+		tasks:   make(chan Task, concurrency*2), // Buffer prevents blocking
 		results: make(chan TaskResult, concurrency*2),
 
-		ctx: ctx,
+		ctx:    ctx,
 		cancel: cancel,
 	}
 }
@@ -89,7 +89,7 @@ func (wp *WorkerPool) Start() {
 	wp.logger.Info("Starting worker pool",
 		zap.Int("concurrency", wp.concurrency),
 	)
-	
+
 	for i := 0; i < wp.concurrency; i++ {
 		wp.wg.Add(1)
 		go wp.worker(i)
@@ -101,12 +101,12 @@ func (wp *WorkerPool) Start() {
 // tasks to complete, and then closes the results channel to signal completion
 func (wp *WorkerPool) Stop() {
 	wp.logger.Info("Stopping worker pool, waiting for tasks to complete")
-	
-	close(wp.tasks)  // Signal no more tasks coming
-	wp.wg.Wait()     // Wait for all workers to finish
-	close(wp.results)  // Signal all results sent
-	wp.cancel()      // Cancel context for any blocking operations
-	
+
+	close(wp.tasks)   // Signal no more tasks coming
+	wp.wg.Wait()      // Wait for all workers to finish
+	close(wp.results) // Signal all results sent
+	wp.cancel()       // Cancel context for any blocking operations
+
 	wp.logger.Info("Worker pool stopped")
 }
 
@@ -140,28 +140,28 @@ func (wp *WorkerPool) Results() <-chan TaskResult {
 // The loop terminates when the tasks channel is closed and drained
 func (wp *WorkerPool) worker(id int) {
 	defer wp.wg.Done()
-	
+
 	wp.logger.Info("Worker started",
 		zap.Int("worker_id", id),
 	)
-	
+
 	for task := range wp.tasks {
 		wp.mu.Lock()
 		wp.activeWorkers++
 		wp.mu.Unlock()
-		
+
 		wp.logger.Info("Worker processing task",
 			zap.Int("worker_id", id),
 			zap.String("task_id", task.ID),
 			zap.String("circuit_type", task.CircuitType),
 		)
-		
+
 		result := wp.processTask(task)
-		
+
 		wp.mu.Lock()
 		wp.activeWorkers--
 		wp.mu.Unlock()
-		
+
 		// Send result with timeout to prevent blocking
 		ctx, cancel := context.WithTimeout(wp.ctx, 5*time.Second)
 		select {
@@ -179,23 +179,22 @@ func (wp *WorkerPool) worker(id int) {
 		}
 		cancel()
 	}
-	
+
 	wp.logger.Info("Worker stopped",
 		zap.Int("worker_id", id),
 	)
 }
-
 
 // processTask executes the actual proof generation for a single task
 // This method contains the core integration between the distributed system
 // and the Phase 1 proof generation logic that remains unchanged
 func (wp *WorkerPool) processTask(task Task) TaskResult {
 	startTime := time.Now()
-	
+
 	result := TaskResult{
 		TaskID: task.ID,
 	}
-	
+
 	// Parse circuit type and create appropriate circuit instance
 	circuit, witness, err := wp.parseTaskInput(task)
 	if err != nil {
@@ -203,7 +202,7 @@ func (wp *WorkerPool) processTask(task Task) TaskResult {
 		result.Duration = time.Since(startTime)
 		return result
 	}
-	
+
 	// Generate proof using Phase 1 prover (unchanged)
 	proof, err := wp.prover.GenerateProof(circuit, witness)
 	if err != nil {
@@ -211,18 +210,18 @@ func (wp *WorkerPool) processTask(task Task) TaskResult {
 		result.Duration = time.Since(startTime)
 		return result
 	}
-	
+
 	// Populate successful result
 	result.Success = true
 	result.ProofData = proof.ProofData
 	result.ProofMetadata = proof.PublicInputs
 	result.Duration = time.Since(startTime)
-	
+
 	// Extract Merkle root if this was a Merkle proof
 	if root, ok := task.InputData["merkle_root"].(string); ok {
 		result.MerkleRoot = root
 	}
-	
+
 	return result
 }
 
@@ -247,12 +246,12 @@ func (wp *WorkerPool) parseMerkleProofTask(task Task) (circuit frontend.Circuit,
 	if !ok {
 		return nil, nil, fmt.Errorf("missing or invalid 'leaves' field")
 	}
-	
-	leafIndex, ok := task.InputData["leaf_index"].(float64)  // JSON numbers are float64
+
+	leafIndex, ok := task.InputData["leaf_index"].(float64) // JSON numbers are float64
 	if !ok {
 		return nil, nil, fmt.Errorf("missing or invalid 'leaf_index' field")
 	}
-	
+
 	// Convert leaf strings to bytes (same as handler)
 	leafBytes := make([][]byte, len(leaves))
 	for i, leaf := range leaves {
@@ -260,35 +259,35 @@ func (wp *WorkerPool) parseMerkleProofTask(task Task) (circuit frontend.Circuit,
 		if !ok {
 			return nil, nil, fmt.Errorf("invalid leaf at index %d", i)
 		}
-		
+
 		// Remove 0x prefix if present
 		if len(leafStr) > 2 && leafStr[:2] == "0x" {
 			leafStr = leafStr[2:]
 		}
-		
+
 		// Decode hex string to bytes
 		leafBytes[i], err = hex.DecodeString(leafStr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("invalid hex at leaf %d: %w", i, err)
 		}
 	}
-	
+
 	// Build Merkle tree (using Phase 1 code)
 	// Need to pass ecc.ID for proper field element handling
 	tree := zkp.NewMerkleTree(leafBytes, ecc.BN254)
 	if tree == nil {
 		return nil, nil, fmt.Errorf("failed to build Merkle tree")
 	}
-	
+
 	// Generate Merkle proof path
 	path, indices, err := tree.GenerateProof(int(leafIndex))
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to generate Merkle proof: %w", err)
 	}
-	
+
 	// Create circuit template (for compilation) - use factory method
 	circuitTemplate := wp.circuitFactory.MerkleProof(tree.Depth)
-	
+
 	// Create witness with actual field element values (same pattern as handler)
 	witnessCircuit := wp.createMerkleWitness(
 		tree.Depth,
@@ -297,7 +296,7 @@ func (wp *WorkerPool) parseMerkleProofTask(task Task) (circuit frontend.Circuit,
 		indices,
 		tree.Root,
 	)
-	
+
 	return circuitTemplate, witnessCircuit, nil
 }
 
@@ -313,19 +312,19 @@ func (wp *WorkerPool) createMerkleWitness(
 	// Convert bytes to field elements using zkp.BytesToFieldElement (same as handler)
 	leafField := zkp.BytesToFieldElement(leaf)
 	rootField := zkp.BytesToFieldElement(root)
-	
+
 	// Convert path to field elements - MUST be []frontend.Variable, not []interface{}!
 	pathFields := make([]frontend.Variable, len(path))
 	for i, p := range path {
 		pathFields[i] = zkp.BytesToFieldElement(p)
 	}
-	
+
 	// Convert indices to field elements
 	indicesFields := make([]frontend.Variable, len(indices))
 	for i, idx := range indices {
 		indicesFields[i] = idx
 	}
-	
+
 	return &circuits.MerkleProofCircuitInputs{
 		Leaf:        leafField,
 		Path:        pathFields,
@@ -340,7 +339,7 @@ func (wp *WorkerPool) createMerkleWitness(
 func (wp *WorkerPool) GetStats() PoolStats {
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
-	
+
 	return PoolStats{
 		Concurrency:    wp.concurrency,
 		ActiveWorkers:  wp.activeWorkers,
