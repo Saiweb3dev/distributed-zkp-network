@@ -28,11 +28,19 @@ var (
 
 func main() {
 	// ========================================================================
-	// Step 1: Parse CLI Flags
+	// Step 1: Parse CLI Flags & Display Version
 	// ========================================================================
 
 	configPath := flag.String("config", "configs/api-gateway.yaml", "Path to config file")
+	showVersion := flag.Bool("version", false, "Show version information")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("API Gateway version %s\n", version)
+		fmt.Printf("Build time: %s\n", buildTime)
+		fmt.Printf("Git commit: %s\n", gitCommit)
+		os.Exit(0)
+	}
 
 	// ========================================================================
 	// Step 2: Load Configuration
@@ -54,9 +62,11 @@ func main() {
 		os.Exit(1)
 	}
 	defer logger.Sync()
-	logger.Info("Starting ZKP Network API Gateway (Phase 2)",
+	logger.Info("Starting ZKP Network API Gateway (Phase 3)",
 		zap.String("version", version),
-		zap.String("mode", "async-task-creation"),
+		zap.String("build_time", buildTime),
+		zap.String("git_commit", gitCommit),
+		zap.String("mode", "event-driven-architecture"),
 	)
 
 	// ========================================================================

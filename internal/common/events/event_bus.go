@@ -46,7 +46,6 @@ type Event struct {
 // distributed services (API Gateway, Coordinators, Workers)
 type EventBus struct {
 	redis   *redis.Client
-	pubsub  *redis.PubSub
 	logger  *zap.Logger
 	enabled bool
 

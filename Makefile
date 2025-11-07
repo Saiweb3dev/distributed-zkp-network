@@ -149,9 +149,17 @@ lint:
 ## lint-ci: Run CI/CD linting checks (fmt, vet, staticcheck, gosec)
 lint-ci: fmt-check vet
 	@echo "$(COLOR_BLUE)Running staticcheck...$(COLOR_RESET)"
-	@staticcheck ./... || echo "$(COLOR_YELLOW)⚠ staticcheck warnings (non-blocking)$(COLOR_RESET)"
+	@if command -v staticcheck >/dev/null 2>&1; then \
+		staticcheck ./... 2>&1 | head -20 || echo "$(COLOR_YELLOW)⚠ staticcheck warnings (non-blocking)$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_YELLOW)⚠ staticcheck not installed, skipping$(COLOR_RESET)"; \
+	fi
 	@echo "$(COLOR_BLUE)Running gosec...$(COLOR_RESET)"
-	@gosec -exclude=G304 ./... || echo "$(COLOR_YELLOW)⚠ gosec warnings (non-blocking)$(COLOR_RESET)"
+	@if command -v gosec >/dev/null 2>&1; then \
+		gosec -exclude=G304 ./... 2>&1 | head -20 || echo "$(COLOR_YELLOW)⚠ gosec warnings (non-blocking)$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_YELLOW)⚠ gosec not installed, skipping$(COLOR_RESET)"; \
+	fi
 	@echo "$(COLOR_GREEN)✓ CI linting passed$(COLOR_RESET)"
 
 ## fmt-check: Check if code is formatted
