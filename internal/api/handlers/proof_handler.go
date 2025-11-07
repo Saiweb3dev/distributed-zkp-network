@@ -158,7 +158,7 @@ func (h *ProofHandler) SubmitMerkleProofTask(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)      // 202 Accepted for async processing
+	w.WriteHeader(http.StatusAccepted) // 202 Accepted for async processing
 	_ = json.NewEncoder(w).Encode(response)
 }
 
