@@ -271,7 +271,7 @@ func (ts *TaskScheduler) assignTaskToWorker(
 			)
 		}
 
-		ts.workerRegistry.DecrementTaskCount(worker.ID)
+		_ = ts.workerRegistry.DecrementTaskCount(worker.ID)
 		return fmt.Errorf("gRPC send failed: %w", err)
 	}
 

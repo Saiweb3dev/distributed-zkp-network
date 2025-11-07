@@ -158,8 +158,8 @@ func (h *ProofHandler) SubmitMerkleProofTask(w http.ResponseWriter, r *http.Requ
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted) // 202 Accepted for async processing
-	json.NewEncoder(w).Encode(response)
+	w.WriteHeader(http.StatusAccepted)      // 202 Accepted for async processing
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // ============================================================================
@@ -215,7 +215,7 @@ func (h *ProofHandler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 // ============================================================================
@@ -252,7 +252,7 @@ func (h *ProofHandler) respondError(w http.ResponseWriter, statusCode int, messa
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (h *ProofHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
@@ -264,5 +264,5 @@ func (h *ProofHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(response)
+	_ = json.NewEncoder(w).Encode(response)
 }

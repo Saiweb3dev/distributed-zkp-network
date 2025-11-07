@@ -122,7 +122,7 @@ func (wr *WorkerRegistry) Stop() {
 
 	for _, worker := range wr.workers {
 		if worker.conn != nil {
-			worker.conn.Close()
+			_ = worker.conn.Close()
 		}
 	}
 }
@@ -402,7 +402,7 @@ func (wr *WorkerRegistry) performCleanup() {
 
 			// Close gRPC connection
 			if worker.conn != nil {
-				worker.conn.Close()
+				_ = worker.conn.Close() // Best effort close
 			}
 
 			// Remove from in-memory map

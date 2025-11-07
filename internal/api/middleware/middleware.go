@@ -33,7 +33,7 @@ func Recovery(logger *zap.Logger) func(http.Handler) http.Handler {
 					// Return 500 to client
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					w.Write([]byte(`{"success": false, "error": "Internal server error"}`))
+					_, _ = w.Write([]byte(`{"success": false, "error": "Internal server error"}`))
 				}
 			}()
 
@@ -153,7 +153,7 @@ func Timeout(timeout time.Duration) func(http.Handler) http.Handler {
 			case <-ctx.Done():
 				// Timeout occurred
 				w.WriteHeader(http.StatusGatewayTimeout)
-				w.Write([]byte(`{"success": false, "error": "Request timeout"}`))
+				_, _ = w.Write([]byte(`{"success": false, "error": "Request timeout"}`))
 			}
 		})
 	}

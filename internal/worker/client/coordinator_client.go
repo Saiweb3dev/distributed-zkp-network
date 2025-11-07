@@ -381,7 +381,7 @@ func (c *CoordinatorClient) Disconnect() {
 
 	// Close connection
 	if c.conn != nil {
-		c.conn.Close()
+		_ = c.conn.Close() // Best effort close
 		c.conn = nil
 	}
 

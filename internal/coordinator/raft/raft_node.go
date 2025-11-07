@@ -26,7 +26,7 @@ func NewRaftNode(
 	logger *zap.Logger,
 ) (*RaftNode, error) {
 	// Create raft directory if it doesn't exist
-	if err := os.MkdirAll(raftDir, 0755); err != nil {
+	if err := os.MkdirAll(raftDir, 0750); err != nil {
 		return nil, fmt.Errorf("failed to create raft directory: %w", err)
 	}
 

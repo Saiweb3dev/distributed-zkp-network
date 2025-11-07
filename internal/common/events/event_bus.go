@@ -245,7 +245,7 @@ func (eb *EventBus) Subscribe(ctx context.Context, eventTypes ...EventType) (<-c
 func (eb *EventBus) receiveLoop(ctx context.Context, pubsub *redis.PubSub, eventChan chan Event, channelKey string) {
 	defer func() {
 		close(eventChan)
-		pubsub.Close()
+		_ = pubsub.Close()
 
 		eb.mu.Lock()
 		delete(eb.channels, channelKey)

@@ -83,7 +83,7 @@ func (fsm *CoordinatorFSM) applyTaskAssigned(payload map[string]interface{}) int
 
 	// Update in-memory state
 	// The database is already updated by the scheduler before replication
-	fsm.workerRegistry.IncrementTaskCount(workerID)
+	_ = fsm.workerRegistry.IncrementTaskCount(workerID)
 
 	fsm.logger.Info("FSM: Task assigned",
 		zap.String("task_id", taskID),
@@ -98,7 +98,7 @@ func (fsm *CoordinatorFSM) applyTaskCompleted(payload map[string]interface{}) in
 	workerID := payload["worker_id"].(string)
 
 	// Decrement worker task count
-	fsm.workerRegistry.DecrementTaskCount(workerID)
+	_ = fsm.workerRegistry.DecrementTaskCount(workerID) // Best effort
 
 	fsm.logger.Info("FSM: Task completed",
 		zap.String("task_id", taskID),
@@ -169,7 +169,7 @@ type CoordinatorSnapshot struct {
 func (s *CoordinatorSnapshot) Persist(sink raft.SnapshotSink) error {
 	err := json.NewEncoder(sink).Encode(s)
 	if err != nil {
-		sink.Cancel()
+		_ = sink.Cancel() // Best effort cancel
 		return err
 	}
 	return sink.Close()
