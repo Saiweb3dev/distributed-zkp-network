@@ -14,7 +14,7 @@ import (
 	"github.com/hashicorp/raft"
 	_ "github.com/lib/pq" // PostgreSQL driver
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
-	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	coordinatorRaft "github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/scheduler"

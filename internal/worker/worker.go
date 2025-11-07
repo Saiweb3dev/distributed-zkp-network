@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/client"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/executor"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/zkp"
@@ -21,6 +22,7 @@ type Worker struct {
 	id                string
 	coordinatorClient *client.CoordinatorClient
 	workerPool        *executor.WorkerPool
+	eventBus          *events.EventBus
 	logger            *zap.Logger
 
 	heartbeatInterval time.Duration
@@ -35,6 +37,7 @@ type Config struct {
 	Concurrency        int
 	HeartbeatInterval  time.Duration
 	ZKPCurve           string
+	EventBus           *events.EventBus // Optional: for publishing task lifecycle events
 }
 
 // NewWorker creates a worker instance with the specified configuration
@@ -61,10 +64,17 @@ func NewWorker(cfg Config, logger *zap.Logger) (*Worker, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Use provided event bus or create disabled one
+	eventBusToUse := cfg.EventBus
+	if eventBusToUse == nil {
+		eventBusToUse = events.NewDisabledEventBus(logger)
+	}
+
 	return &Worker{
 		id:                cfg.WorkerID,
 		coordinatorClient: coordClient,
 		workerPool:        pool,
+		eventBus:          eventBusToUse,
 		logger:            logger,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		ctx:               ctx,
@@ -254,6 +264,31 @@ func (w *Worker) reportTaskSuccess(result executor.TaskResult) {
 			zap.String("task_id", result.TaskID),
 			zap.Duration("duration", result.Duration),
 		)
+
+		// Publish EventTaskCompleted event
+		// This allows real-time monitoring and client notifications
+		if w.eventBus.IsEnabled() {
+			event := events.Event{
+				Type:      events.EventTaskCompleted,
+				Timestamp: time.Now().Unix(),
+				Data: map[string]interface{}{
+					"task_id":     result.TaskID,
+					"worker_id":   w.id,
+					"duration_ms": result.Duration.Milliseconds(),
+				},
+			}
+
+			if err := w.eventBus.Publish(ctx, event); err != nil {
+				w.logger.Warn("Failed to publish task completion event",
+					zap.Error(err),
+					zap.String("task_id", result.TaskID),
+				)
+			} else {
+				w.logger.Debug("Task completion event published",
+					zap.String("task_id", result.TaskID),
+				)
+			}
+		}
 	}
 }
 
@@ -272,6 +307,31 @@ func (w *Worker) reportTaskFailure(taskID string, err error) {
 			zap.String("task_id", taskID),
 			zap.Error(err),
 		)
+
+		// Publish EventTaskFailed event
+		// This allows real-time failure monitoring and alerting
+		if w.eventBus.IsEnabled() {
+			event := events.Event{
+				Type:      events.EventTaskFailed,
+				Timestamp: time.Now().Unix(),
+				Data: map[string]interface{}{
+					"task_id":   taskID,
+					"worker_id": w.id,
+					"error":     err.Error(),
+				},
+			}
+
+			if pubErr := w.eventBus.Publish(ctx, event); pubErr != nil {
+				w.logger.Warn("Failed to publish task failure event",
+					zap.Error(pubErr),
+					zap.String("task_id", taskID),
+				)
+			} else {
+				w.logger.Debug("Task failure event published",
+					zap.String("task_id", taskID),
+				)
+			}
+		}
 	}
 }
 

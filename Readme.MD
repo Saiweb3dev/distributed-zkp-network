@@ -51,23 +51,38 @@ test\e2e\run-tests.bat
 ### Operations
 - [Production Deployment](docs/PRODUCTION_DEPLOYMENT.md) - Production setup strategies
 - [CI/CD Pipeline](docs/CI_CD_PIPELINE.md) - Automated testing and deployment
+- [CI/CD Local Testing](docs/CI_CD_LOCAL_TESTING.md) - Run GitHub Actions locally
+- [Quick CI Commands](docs/QUICK_CI_COMMANDS.md) - Fast reference for pre-push checks
 - [Test Failure Analysis](docs/TEST_FAILURE_ANALYSIS.md) - Troubleshooting guide
 
 ## 🧪 Testing
 
-Comprehensive test suite with 19 automated tests covering:
-- Container health checks
-- Raft leader election
-- Database connectivity
-- API Gateway functionality
-- Worker registration
+Comprehensive test suite with **31 automated tests** covering:
+- Container health checks (7 tests)
+- Raft leader election (3 tests)
+- Database connectivity (2 tests)
+- API Gateway functionality (6 tests)
+- Worker registration (1 test)
+- **Redis Pub/Sub system (12 tests)** - New in Phase 03
 
 See [test/README.md](test/README.md) for details.
 
 **Test Coverage:**
-- E2E tests: 100% (19/19 passing)
+- E2E tests: 100% (31/31 passing)
 - Unit tests: 50%+ (CI requirement)
 - Integration tests: Cluster health, failover, performance
+- Redis tests: Pub/Sub, event-driven architecture
+
+### Run Tests Locally Before Pushing
+```bash
+# Quick pre-push checks (2 minutes)
+make pre-push
+
+# Full CI/CD pipeline (15-20 minutes)
+make ci-local
+```
+
+See [docs/QUICK_CI_COMMANDS.md](docs/QUICK_CI_COMMANDS.md) for more options.
 
 ## 🏗️ Architecture
 

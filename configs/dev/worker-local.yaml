@@ -14,6 +14,30 @@ worker:
   register_retries: 3
   task_timeout: 5m
 
+redis:
+  host: "redis"             # Docker service name, use "localhost" for local dev
+  port: 6379
+  password: ""              # Leave empty if no auth
+  db: 0                     # Redis database number (0-15)
+  
+  # Connection pool settings
+  max_retries: 3            # Max retry attempts for failed operations
+  pool_size: 10             # Max number of socket connections
+  min_idle_conns: 5         # Minimum idle connections to maintain
+  
+  # Timeout settings
+  dial_timeout: 5s          # Timeout for establishing connection
+  read_timeout: 3s          # Timeout for socket reads
+  write_timeout: 3s         # Timeout for socket writes
+  pool_timeout: 4s          # Timeout when all connections are busy
+  
+  # Feature flags
+  enabled: true             # Enable Redis event bus (set false to use polling only)
+  caching_enabled: false    # Enable caching features (future use)
+  
+  # Caching configuration (for future use)
+  default_ttl: 5m           # Default cache expiration time  
+
 logging:
   level: "debug"       # Verbose logging for development
   format: "console"    # Human-readable format

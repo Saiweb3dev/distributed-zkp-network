@@ -14,7 +14,7 @@ import (
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/handlers"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/router"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
-	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
 )

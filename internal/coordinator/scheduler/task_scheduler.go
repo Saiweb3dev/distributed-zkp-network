@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"

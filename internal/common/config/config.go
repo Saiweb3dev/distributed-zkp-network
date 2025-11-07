@@ -25,6 +25,7 @@ type Config struct {
 // WorkerConfig holds worker node configuration
 type WorkerConfig struct {
 	Worker  WorkerNodeConfig `mapstructure:"worker"`
+	Redis   RedisConfig      `mapstructure:"redis"`
 	Logging LoggingConfig    `mapstructure:"logging"`
 	Metrics MetricsConfig    `mapstructure:"metrics"`
 	ZKP     ZKPConfig        `mapstructure:"zkp"`
