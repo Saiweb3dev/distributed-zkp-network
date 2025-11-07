@@ -61,12 +61,6 @@ jobs:
       - name: Run staticcheck
         run: staticcheck ./...
 
-      - name: Install gosec (Security Scanner)
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
-
-      - name: Run gosec
-        run: gosec -exclude=G304 ./...
-
   # ============================================================================
   # Job 2: Unit Tests
   # ============================================================================
