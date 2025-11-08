@@ -35,13 +35,13 @@ redis:
   
   # Feature flags
   enabled: true             # Enable Redis event bus (set false to use polling only)
-  caching_enabled: false    # Enable caching features (future use)
+  caching_enabled: true     # Enable caching features (NEW: Phase 14)
   
-  # Caching configuration (for future use)
-  default_ttl: 5m           # Default cache expiration time
+  # Caching configuration
+  default_ttl: 5m           # Default cache expiration time (completed tasks: 30m, failed: 10m)
 
 logging:
-  level: "info"
+  level: "debug"
   format: "json"
   output: "stdout"
 

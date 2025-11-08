@@ -13,6 +13,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/handlers"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/api/router"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/cache"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
@@ -145,17 +146,61 @@ func main() {
 	}
 
 	// ========================================================================
+	// Step 5.5: Initialize Cache Layer
+	// ========================================================================
+
+	var cacheLayer *cache.CacheLayer
+
+	if cfg.Redis.CachingEnabled {
+		logger.Info("Initializing Cache Layer",
+			zap.String("host", cfg.Redis.Host),
+			zap.Int("port", cfg.Redis.Port),
+			zap.Duration("default_ttl", cfg.Redis.DefaultTTL),
+		)
+
+		cacheConfig := cache.CacheConfig{
+			Host:         cfg.Redis.Host,
+			Port:         cfg.Redis.Port,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			TTL:          cfg.Redis.DefaultTTL,
+			MaxRetries:   cfg.Redis.MaxRetries,
+			PoolSize:     cfg.Redis.PoolSize,
+			MinIdleConns: cfg.Redis.MinIdleConns,
+			DialTimeout:  cfg.Redis.DialTimeout,
+			ReadTimeout:  cfg.Redis.ReadTimeout,
+			WriteTimeout: cfg.Redis.WriteTimeout,
+			Enabled:      cfg.Redis.CachingEnabled,
+		}
+
+		var err error
+		cacheLayer, err = cache.NewCacheLayer(cacheConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize cache, continuing without caching",
+				zap.Error(err),
+			)
+			cacheLayer = cache.NewDisabledCacheLayer(logger)
+		} else {
+			logger.Info("Cache layer initialized successfully")
+			defer cacheLayer.Close()
+		}
+	} else {
+		logger.Info("Cache layer disabled in configuration")
+		cacheLayer = cache.NewDisabledCacheLayer(logger)
+	}
+
+	// ========================================================================
 	// Step 6 : Initialize Repositories
 	// ========================================================================
 
 	taskRepo := postgres.NewTaskRepository(db)
 
 	// ========================================================================
-	// Step 7 Initialize Handlers
+	// Step 7 Initialize Handlers (with Cache Layer)
 	// ========================================================================
 
-	// Phase 2: Handler uses task repository for async processing
-	proofHandler := handlers.NewProofHandler(taskRepo, eventBus, logger)
+	// Phase 2: Handler uses task repository for async processing with caching
+	proofHandler := handlers.NewProofHandler(taskRepo, eventBus, cacheLayer, logger)
 
 	// ========================================================================
 	// Step 8: Setup Router
