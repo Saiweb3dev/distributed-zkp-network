@@ -22,13 +22,23 @@ func SetupRouter(proofHandler *handlers.ProofHandler, logger *zap.Logger) *mux.R
 	// 1. Recovery - catch panics and return 500 instead of crashing
 	r.Use(middleware.Recovery(logger))
 
-	// 2. Logging - log every request
+	// 2. Request ID - add unique ID to each request for tracing
+	r.Use(middleware.RequestID(logger))
+
+	// 3. Body size limit (5MB)
+	r.Use(middleware.BodySizeLimit(middleware.MaxRequestBodySize, logger))
+
+	// 4. Rate limiting (10 req/sec per IP, burst of 20)
+	rateLimiter := middleware.NewRateLimiter(10.0, 20, logger)
+	r.Use(rateLimiter.Middleware())
+
+	// 5. Logging - log every request
 	r.Use(middleware.Logging(logger))
 
-	// 3. CORS - allow browser requests
+	// 6. CORS - allow browser requests
 	r.Use(middleware.CORS())
 
-	// 4. Timeout - prevent slow requests from hanging forever
+	// 7. Timeout - prevent slow requests from hanging forever
 	r.Use(middleware.Timeout(30 * time.Second))
 
 	// ========================================================================

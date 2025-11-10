@@ -56,10 +56,15 @@ zkp:
   compile_cache_size: 100
   max_proof_size_mb: 10
   
+# Add rate limiting config
 rate_limit:
   enabled: true
-  requests_per_second: 100
-  burst: 200
+  requests_per_second: 10.0
+  burst: 20
+  # Optional: whitelist IPs that bypass rate limiting
+  whitelist:
+    - "127.0.0.1"
+    - "::1"
 
 cors:
   enabled: true

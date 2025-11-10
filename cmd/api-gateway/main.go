@@ -16,6 +16,7 @@ import (
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/cache"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/health"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
 )
@@ -62,12 +63,22 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync()
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			// Ignore errors on stdout/stderr sync (common on Linux)
+			if err.Error() != "sync /dev/stdout: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stderr: inappropriate ioctl for device" {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
+
 	logger.Info("Starting ZKP Network API Gateway (Phase 3)",
 		zap.String("version", version),
 		zap.String("build_time", buildTime),
 		zap.String("git_commit", gitCommit),
 		zap.String("mode", "event-driven-architecture"),
+		zap.String("config_path", *configPath),
 	)
 
 	// ========================================================================
@@ -93,13 +104,22 @@ func main() {
 	defer db.Close()
 
 	// Test database connection
-	if err := db.Ping(); err != nil {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := db.PingContext(ctx); err != nil {
 		logger.Fatal("Database ping failed", zap.Error(err))
 	}
 
-	// Till Here
-
 	logger.Info("Database connected successfully")
+
+	// ========================================================================
+	// Step 4.5: Run Database Migrations (if needed)
+	// ========================================================================
+
+	// TODO: Implement proper migration system (e.g., golang-migrate)
+	// For now, we assume migrations are run manually or via init scripts
+	logger.Info("Skipping automatic migrations (run manually)")
 
 	// ========================================================================
 	// Step 5: Initialize Redis Event Bus
@@ -203,6 +223,22 @@ func main() {
 	proofHandler := handlers.NewProofHandler(taskRepo, eventBus, cacheLayer, logger)
 
 	// ========================================================================
+	// Step 7.5: Perform Health Check Before Starting Server
+	// ========================================================================
+
+	healthChecker := health.NewChecker(logger)
+	logger.Info("Performing startup health checks...")
+
+	healthCtx, healthCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer healthCancel()
+
+	if err := healthChecker.WaitForHealthy(healthCtx, db, eventBus, cacheLayer, 30*time.Second); err != nil {
+		logger.Fatal("Startup health check failed", zap.Error(err))
+	}
+
+	logger.Info("All systems operational, ready to accept traffic")
+
+	// ========================================================================
 	// Step 8: Setup Router
 	// ========================================================================
 
@@ -251,12 +287,12 @@ func main() {
 	logger.Info("Received shutdown signal", zap.String("signal", sig.String()))
 
 	// Give outstanding requests time to complete
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
 
 	logger.Info("Shutting down server gracefully...")
 
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Error("Server forced to shutdown", zap.Error(err))
 	}
 
