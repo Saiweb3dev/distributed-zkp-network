@@ -159,7 +159,6 @@ func (h *ProofHandler) SubmitMerkleProofTask(w http.ResponseWriter, r *http.Requ
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-
 func (h *ProofHandler) checkDuplicateTask(
 	ctx context.Context,
 	req MerkleProofRequest,
@@ -285,7 +284,6 @@ func (h *ProofHandler) checkDuplicateTask(
 
 	return "", false, fmt.Errorf("request is being processed by another instance, please retry")
 }
-
 
 func (h *ProofHandler) createNewTask(
 	ctx context.Context,

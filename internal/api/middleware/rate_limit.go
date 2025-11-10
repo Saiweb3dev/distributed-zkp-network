@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/time/rate"
 	"go.uber.org/zap"
+	"golang.org/x/time/rate"
 )
 
 // RateLimiter implements token bucket rate limiting per IP

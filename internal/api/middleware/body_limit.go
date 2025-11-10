@@ -3,7 +3,7 @@ package middleware
 import (
 	"fmt"
 	"net/http"
-	
+
 	"go.uber.org/zap"
 )
 
