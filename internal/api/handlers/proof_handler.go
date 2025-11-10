@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/api/middleware"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/cache"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
@@ -79,9 +80,9 @@ func NewProofHandler(
 }
 
 func (h *ProofHandler) SubmitMerkleProofTask(w http.ResponseWriter, r *http.Request) {
-	// Extract or generate request ID for tracing
+	// Extract or generate request ID for tracing (from middleware)
 	requestID := h.getRequestID(r)
-	ctx := context.WithValue(r.Context(), "request_id", requestID)
+	ctx := r.Context()
 
 	// Step 1: Parse and validate request
 	var req MerkleProofRequest
@@ -509,28 +510,26 @@ func (h *ProofHandler) respondError(
 }
 
 func (h *ProofHandler) getRequestID(r *http.Request) string {
-	// Check if request ID already exists (from middleware)
+	// Use middleware helper to get request ID from context
+	if reqID := middleware.GetRequestID(r.Context()); reqID != "" {
+		return reqID
+	}
+	// Fallback: check header directly
 	if reqID := r.Header.Get("X-Request-ID"); reqID != "" {
 		return reqID
 	}
-	// Generate new request ID
+	// Last resort: generate new request ID
 	return uuid.New().String()
 }
 
 func (h *ProofHandler) getClientIP(ctx context.Context) string {
-	// Extract from context (set by middleware)
-	if ip, ok := ctx.Value("client_ip").(string); ok {
-		return ip
-	}
-	return "unknown"
+	// Use middleware helper to extract from context
+	return middleware.GetClientIP(ctx)
 }
 
 func (h *ProofHandler) getUserAgent(ctx context.Context) string {
-	// Extract from context (set by middleware)
-	if ua, ok := ctx.Value("user_agent").(string); ok {
-		return ua
-	}
-	return "unknown"
+	// Use middleware helper to extract from context
+	return middleware.GetUserAgent(ctx)
 }
 
 func (h *ProofHandler) HealthCheck(w http.ResponseWriter, r *http.Request) {
