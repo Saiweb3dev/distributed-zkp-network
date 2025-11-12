@@ -12,9 +12,10 @@ import (
 	"time"
 
 	"github.com/hashicorp/raft"
-	_ "github.com/lib/pq" // PostgreSQL driver
+	_ "github.com/lib/pq"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/constants"
 	coordinatorRaft "github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/scheduler"
@@ -50,7 +51,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync() // Flush any buffered log entries
+	// Ensure all buffered logs are written on shutdown
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			// Ignore common benign errors on stdout/stderr
+			if err.Error() != "sync /dev/stdout: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stderr: inappropriate ioctl for device" {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
 
 	logger.Info("Starting ZKP Coordinator",
 		zap.String("version", version),
@@ -96,13 +106,13 @@ func main() {
 	}
 	defer db.Close()
 
-	// Verify database connectivity with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := db.PingContext(ctx); err != nil {
-		cancel()
+	// Verify database connectivity with ping
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pingCancel()
+
+	if err := db.PingContext(pingCtx); err != nil {
 		logger.Fatal("Database ping failed", zap.Error(err))
 	}
-	cancel()
 
 	logger.Info("Database connection established",
 		zap.Int("max_open_conns", cfg.Database.MaxOpenConns),
@@ -210,17 +220,24 @@ func main() {
 		}
 
 		if err := raftNode.Bootstrap(servers); err != nil {
-			logger.Warn("Failed to bootstrap cluster (may already be bootstrapped)",
-				zap.Error(err),
-			)
+			// Check if already bootstrapped (not an error)
+			if err == raft.ErrCantBootstrap {
+				logger.Info("Cluster already bootstrapped")
+			} else {
+				logger.Error("Failed to bootstrap cluster", zap.Error(err))
+				// Continue anyway - node can join via AddVoter
+			}
 		} else {
 			logger.Info("Raft cluster bootstrapped successfully")
 		}
 	}
 
-	// Wait for leadership election
+	// Wait for leadership election with timeout and polling
 	logger.Info("Waiting for leadership election...")
-	time.Sleep(3 * time.Second) // Give Raft time to elect a leader
+	if err := waitForLeaderElection(raftNode, constants.RaftLeaderElectionTimeout, logger); err != nil {
+		logger.Warn("Leadership election timeout", zap.Error(err))
+		// Continue anyway - node may become leader or join later
+	}
 
 	raftState := raftNode.GetState()
 	logger.Info("Raft node state",
@@ -278,20 +295,20 @@ func main() {
 	grpcOpts := []grpc.ServerOption{
 		// Keepalive settings to detect dead connections
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle:     15 * time.Minute, // Close idle connections after 15min
-			MaxConnectionAge:      30 * time.Minute, // Force reconnect after 30min
-			MaxConnectionAgeGrace: 5 * time.Minute,  // Allow 5min for graceful shutdown
-			Time:                  5 * time.Minute,  // Send keepalive ping every 5min
-			Timeout:               20 * time.Second, // Wait 20s for keepalive ack
+			MaxConnectionIdle:     constants.GRPCKeepaliveMaxConnectionIdle,
+			MaxConnectionAge:      constants.GRPCKeepaliveMaxConnectionAge,
+			MaxConnectionAgeGrace: constants.GRPCKeepaliveMaxConnectionAgeGrace,
+			Time:                  constants.GRPCKeepaliveTime,
+			Timeout:               constants.GRPCKeepaliveTimeout,
 		}),
 		// Keepalive enforcement to prevent resource exhaustion
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Minute, // Minimum time between pings from client
-			PermitWithoutStream: true,            // Allow pings even when no streams active
+			MinTime:             constants.GRPCKeepaliveTime, // Minimum time between pings from client
+			PermitWithoutStream: true,                        // Allow pings even when no streams active
 		}),
-		// Message size limits (10MB for proof data)
-		grpc.MaxRecvMsgSize(10 * 1024 * 1024),
-		grpc.MaxSendMsgSize(10 * 1024 * 1024),
+		// Message size limits for proof data
+		grpc.MaxRecvMsgSize(constants.GRPCMaxRecvMsgSize),
+		grpc.MaxSendMsgSize(constants.GRPCMaxSendMsgSize),
 	}
 
 	grpcServer := grpc.NewServer(grpcOpts...)
@@ -320,8 +337,17 @@ func main() {
 		logger.Fatal("Failed to listen on gRPC port", zap.Error(err))
 	}
 
-	// Start gRPC server in background goroutine
+	// Start gRPC server in background goroutine with panic recovery
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("gRPC server panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+
 		logger.Info("gRPC server started", zap.String("address", cfg.GetGRPCAddress()))
 		if err := grpcServer.Serve(lis); err != nil {
 			logger.Error("gRPC server terminated with error", zap.Error(err))
@@ -354,8 +380,17 @@ func main() {
 		IdleTimeout:  60 * time.Second, // Maximum idle time between requests
 	}
 
-	// Start HTTP server in background goroutine
+	// Start HTTP server in background goroutine with panic recovery
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("HTTP server panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+
 		logger.Info("HTTP server started", zap.String("address", cfg.GetHTTPAddress()))
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("HTTP server terminated with error", zap.Error(err))
@@ -367,7 +402,17 @@ func main() {
 	// ========================================================================
 	// Periodically identifies and reassigns stale tasks (tasks that have been
 	// in-progress too long, indicating worker failure)
-	go startStaleTaskCleanup(cfg, taskScheduler, logger)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Stale task cleanup panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+		startStaleTaskCleanup(cfg, taskScheduler, logger)
+	}()
 
 	// ========================================================================
 	// STEP 11: Signal Coordinator Ready
@@ -391,12 +436,20 @@ func main() {
 	// ========================================================================
 	// STEP 13: Graceful Shutdown (Clean Resource Cleanup)
 	// ========================================================================
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), constants.GracefulShutdownTimeout)
 	defer shutdownCancel()
+
+	logger.Info("Initiating graceful shutdown sequence")
 
 	// Stop accepting new tasks
 	logger.Info("Stopping task scheduler...")
 	taskScheduler.Stop()
+
+	// Stop gRPC service (closes worker streams)
+	logger.Info("Shutting down gRPC service...")
+	if err := grpcService.Shutdown(); err != nil {
+		logger.Error("gRPC service shutdown failed", zap.Error(err))
+	}
 
 	// Stop Raft node (step down from leadership if leader)
 	logger.Info("Shutting down Raft node...")
@@ -406,7 +459,20 @@ func main() {
 
 	// Stop accepting new gRPC connections and drain existing ones
 	logger.Info("Stopping gRPC server...")
-	grpcServer.GracefulStop()
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	// Wait for graceful stop with timeout
+	select {
+	case <-stopped:
+		logger.Info("gRPC server stopped gracefully")
+	case <-time.After(constants.StreamDrainTimeout):
+		logger.Warn("gRPC server graceful stop timed out, forcing stop")
+		grpcServer.Stop()
+	}
 
 	// Stop HTTP server
 	logger.Info("Stopping HTTP server...")
@@ -418,13 +484,23 @@ func main() {
 	logger.Info("Stopping worker registry...")
 	workerRegistry.Stop()
 
+	// Close event bus
+	if eventBus != nil {
+		logger.Info("Closing event bus...")
+		if err := eventBus.Close(); err != nil {
+			logger.Error("Event bus close failed", zap.Error(err))
+		}
+	}
+
 	// Close database connections
 	logger.Info("Closing database connections...")
 	if err := db.Close(); err != nil {
 		logger.Error("Database close failed", zap.Error(err))
 	}
 
-	logger.Info("Coordinator shutdown complete")
+	logger.Info("Coordinator shutdown complete",
+		zap.String("coordinator_id", cfg.Coordinator.ID),
+	)
 }
 
 // ============================================================================
@@ -573,4 +649,36 @@ func initLogger() (*zap.Logger, error) {
 	config.EncoderConfig.TimeKey = "timestamp"
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	return config.Build()
+}
+
+// waitForLeaderElection polls Raft state until a leader is elected or timeout occurs.
+func waitForLeaderElection(
+	raftNode *coordinatorRaft.RaftNode,
+	timeout time.Duration,
+	logger *zap.Logger,
+) error {
+	deadline := time.Now().Add(timeout)
+	pollInterval := constants.RaftLeaderElectionPollInterval
+
+	for time.Now().Before(deadline) {
+		state := raftNode.GetState()
+		leaderAddr := raftNode.GetLeaderAddress()
+
+		// Leader elected (either this node or another)
+		if state == raft.Leader || leaderAddr != "" {
+			logger.Info("Leader elected",
+				zap.String("state", state.String()),
+				zap.String("leader", leaderAddr),
+			)
+			return nil
+		}
+
+		logger.Debug("Waiting for leader election",
+			zap.String("state", state.String()),
+		)
+
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("leadership election timeout after %v", timeout)
 }

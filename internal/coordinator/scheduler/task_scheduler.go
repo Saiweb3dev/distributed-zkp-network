@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/constants"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
@@ -61,7 +62,7 @@ func NewTaskScheduler(
 		eventBus:       eventBus,
 		logger:         logger,
 		pollInterval:   pollInterval,
-		assignTimeout:  time.Second * 5,
+		assignTimeout:  constants.TaskAssignTimeout,
 		ctx:            ctx,
 		cancel:         cancel,
 	}
@@ -92,9 +93,21 @@ func (ts *TaskScheduler) Stop() {
 	ts.cancel()
 }
 
-// eventDrivenLoop listens for task creation events from Redis
-// This provides near-instant task scheduling instead of waiting for polling
+// eventDrivenLoop listens for task creation events from Redis.
+// Provides near-instant task scheduling instead of waiting for polling.
+// Includes panic recovery to prevent loop from stopping.
 func (ts *TaskScheduler) eventDrivenLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			ts.logger.Error("Event-driven loop panic recovered",
+				zap.Any("panic", r),
+				zap.Stack("stack"),
+			)
+			// Restart event loop after panic
+			go ts.eventDrivenLoop()
+		}
+	}()
+
 	ts.logger.Info("Starting event-driven scheduling loop")
 
 	// Subscribe to task creation events
@@ -114,8 +127,7 @@ func (ts *TaskScheduler) eventDrivenLoop() {
 
 			// Only process if this node is the leader
 			if !ts.raftNode.IsLeader() {
-				ts.logger.Debug("Skipping event (not leader)")
-				continue
+				continue // Don't log in hot path
 			}
 
 			ts.metrics.EventTriggered++
@@ -125,9 +137,12 @@ func (ts *TaskScheduler) eventDrivenLoop() {
 				zap.Any("data", event.Data),
 			)
 
-			// Process immediately!
+			// Process immediately in non-blocking way
+			// If scheduling fails, polling will catch it
 			if err := ts.scheduleOneCycle(); err != nil {
-				ts.logger.Error("Event-driven schedule failed", zap.Error(err))
+				ts.logger.Warn("Event-driven schedule failed (polling will retry)",
+					zap.Error(err),
+				)
 			}
 
 		case <-ts.ctx.Done():
@@ -137,10 +152,22 @@ func (ts *TaskScheduler) eventDrivenLoop() {
 	}
 }
 
-// schedulingLoop is the main control flow that runs continuously on the leader
+// schedulingLoop is the main control flow that runs continuously on the leader.
 // Each iteration performs three operations: fetch pending tasks, select workers,
-// and assign tasks while handling any errors that occur
+// and assign tasks while handling any errors that occur.
+// Includes panic recovery to prevent scheduler from stopping.
 func (ts *TaskScheduler) schedulingLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			ts.logger.Error("Scheduling loop panic recovered",
+				zap.Any("panic", r),
+				zap.Stack("stack"),
+			)
+			// Restart scheduling loop after panic
+			go ts.schedulingLoop()
+		}
+	}()
+
 	ticker := time.NewTicker(ts.pollInterval)
 	defer ticker.Stop()
 
@@ -149,13 +176,12 @@ func (ts *TaskScheduler) schedulingLoop() {
 		case <-ticker.C:
 			// CRITICAL: Only leader schedules tasks
 			if !ts.raftNode.IsLeader() {
-				ts.logger.Debug("Skipping schedule cycle (not leader)")
-				continue
+				continue // Don't log in hot path
 			}
 			ts.metrics.PollCycles++
 
 			if err := ts.scheduleOneCycle(); err != nil {
-				ts.logger.Error("Scheduling cycle failed",
+				ts.logger.Warn("Scheduling cycle failed (will retry)",
 					zap.Error(err),
 				)
 			}

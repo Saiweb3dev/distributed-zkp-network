@@ -78,12 +78,29 @@ func (fsm *CoordinatorFSM) Apply(log *raft.Log) interface{} {
 }
 
 func (fsm *CoordinatorFSM) applyTaskAssigned(payload map[string]interface{}) interface{} {
-	taskID := payload["task_id"].(string)
-	workerID := payload["worker_id"].(string)
+	// Safe type assertions with error handling
+	taskID, ok := payload["task_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid task_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
+
+	workerID, ok := payload["worker_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid worker_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
 
 	// Update in-memory state
 	// The database is already updated by the scheduler before replication
-	_ = fsm.workerRegistry.IncrementTaskCount(workerID)
+	if err := fsm.workerRegistry.IncrementTaskCount(workerID); err != nil {
+		fsm.logger.Warn("Failed to increment worker task count in FSM",
+			zap.Error(err),
+			zap.String("worker_id", workerID),
+		)
+	}
 
 	fsm.logger.Info("FSM: Task assigned",
 		zap.String("task_id", taskID),
@@ -94,11 +111,28 @@ func (fsm *CoordinatorFSM) applyTaskAssigned(payload map[string]interface{}) int
 }
 
 func (fsm *CoordinatorFSM) applyTaskCompleted(payload map[string]interface{}) interface{} {
-	taskID := payload["task_id"].(string)
-	workerID := payload["worker_id"].(string)
+	// Safe type assertions with error handling
+	taskID, ok := payload["task_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid task_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
+
+	workerID, ok := payload["worker_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid worker_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
 
 	// Decrement worker task count
-	_ = fsm.workerRegistry.DecrementTaskCount(workerID) // Best effort
+	if err := fsm.workerRegistry.DecrementTaskCount(workerID); err != nil {
+		fsm.logger.Warn("Failed to decrement worker task count in FSM",
+			zap.Error(err),
+			zap.String("worker_id", workerID),
+		)
+	}
 
 	fsm.logger.Info("FSM: Task completed",
 		zap.String("task_id", taskID),
@@ -109,7 +143,12 @@ func (fsm *CoordinatorFSM) applyTaskCompleted(payload map[string]interface{}) in
 }
 
 func (fsm *CoordinatorFSM) applyWorkerAdded(payload map[string]interface{}) interface{} {
-	workerID := payload["worker_id"].(string)
+	workerID, ok := payload["worker_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid worker_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
 
 	fsm.logger.Info("FSM: Worker added",
 		zap.String("worker_id", workerID),
@@ -119,7 +158,12 @@ func (fsm *CoordinatorFSM) applyWorkerAdded(payload map[string]interface{}) inte
 }
 
 func (fsm *CoordinatorFSM) applyWorkerRemoved(payload map[string]interface{}) interface{} {
-	workerID := payload["worker_id"].(string)
+	workerID, ok := payload["worker_id"].(string)
+	if !ok {
+		err := fmt.Errorf("invalid worker_id type in payload")
+		fsm.logger.Error("FSM apply failed", zap.Error(err))
+		return err
+	}
 
 	fsm.logger.Info("FSM: Worker removed",
 		zap.String("worker_id", workerID),

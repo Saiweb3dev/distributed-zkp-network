@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/constants"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/storage/postgres"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -93,8 +94,8 @@ func NewWorkerRegistry(
 	}
 }
 
-// Start begins background tasks for worker health monitoring
-// This includes periodic cleanup of dead workers and heartbeat validation
+// Start begins background tasks for worker health monitoring.
+// This includes periodic cleanup of dead workers, heartbeat validation, and DB sync.
 func (wr *WorkerRegistry) Start() error {
 	wr.logger.Info("Starting worker registry")
 
@@ -103,8 +104,9 @@ func (wr *WorkerRegistry) Start() error {
 		return fmt.Errorf("failed to load workers from database: %w", err)
 	}
 
-	// Start cleanup goroutine
+	// Start background goroutines
 	go wr.cleanupLoop()
+	go wr.dbSyncLoop()
 
 	return nil
 }
@@ -227,8 +229,9 @@ func (wr *WorkerRegistry) UpdateHeartbeat(workerID string) error {
 	return nil
 }
 
-// GetAvailableWorkers returns workers that can accept new tasks
-// A worker is available if it is active, has capacity, and has recent heartbeats
+// GetAvailableWorkers returns COPIES of workers that can accept new tasks.
+// Returns copies to prevent race conditions from caller modifying without lock.
+// A worker is available if it is active, has capacity, and has recent heartbeats.
 func (wr *WorkerRegistry) GetAvailableWorkers() []*WorkerInfo {
 	wr.mu.RLock()
 	defer wr.mu.RUnlock()
@@ -252,7 +255,20 @@ func (wr *WorkerRegistry) GetAvailableWorkers() []*WorkerInfo {
 			continue
 		}
 
-		available = append(available, worker)
+		// Return a COPY to prevent race conditions
+		workerCopy := &WorkerInfo{
+			ID:                 worker.ID,
+			Address:            worker.Address,
+			MaxConcurrentTasks: worker.MaxConcurrentTasks,
+			CurrentTaskCount:   worker.CurrentTaskCount,
+			Status:             worker.Status,
+			LastHeartbeatAt:    worker.LastHeartbeatAt,
+			RegisteredAt:       worker.RegisteredAt,
+			Capabilities:       worker.Capabilities, // Shallow copy is OK (read-only)
+			conn:               worker.conn,
+			client:             worker.client,
+		}
+		available = append(available, workerCopy)
 	}
 
 	return available
@@ -271,8 +287,9 @@ func (wr *WorkerRegistry) GetWorker(workerID string) (*WorkerInfo, error) {
 	return worker, nil
 }
 
-// IncrementTaskCount increases a worker's active task count
-// This is called when the scheduler assigns a new task to the worker
+// IncrementTaskCount increases a worker's active task count.
+// This is called when the scheduler assigns a new task to the worker.
+// Returns error if worker is at capacity (safety check).
 func (wr *WorkerRegistry) IncrementTaskCount(workerID string) error {
 	wr.mu.Lock()
 	defer wr.mu.Unlock()
@@ -282,11 +299,18 @@ func (wr *WorkerRegistry) IncrementTaskCount(workerID string) error {
 		return fmt.Errorf("worker not found: %s", workerID)
 	}
 
+	// Safety check: prevent over-assignment
+	if worker.CurrentTaskCount >= worker.MaxConcurrentTasks {
+		return fmt.Errorf("worker %s at capacity (%d/%d)",
+			workerID, worker.CurrentTaskCount, worker.MaxConcurrentTasks)
+	}
+
 	worker.CurrentTaskCount++
 
 	wr.logger.Debug("Worker task count incremented",
 		zap.String("worker_id", workerID),
-		zap.Int("count", worker.CurrentTaskCount),
+		zap.Int("current", worker.CurrentTaskCount),
+		zap.Int("max", worker.MaxConcurrentTasks),
 	)
 
 	return nil
@@ -361,9 +385,21 @@ func (wr *WorkerRegistry) SendTask(
 	return worker.client.AssignTask(ctx, task)
 }
 
-// cleanupLoop periodically checks for dead workers and removes them
-// Dead workers are those that haven't sent heartbeats for extended periods
+// cleanupLoop periodically checks for dead workers and removes them.
+// Dead workers are those that haven't sent heartbeats for extended periods.
+// Includes panic recovery to prevent entire registry from stopping.
 func (wr *WorkerRegistry) cleanupLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			wr.logger.Error("Cleanup loop panic recovered",
+				zap.Any("panic", r),
+				zap.Stack("stack"),
+			)
+			// Restart cleanup loop after panic
+			go wr.cleanupLoop()
+		}
+	}()
+
 	ticker := time.NewTicker(wr.cleanupInterval)
 	defer ticker.Stop()
 
@@ -373,6 +409,7 @@ func (wr *WorkerRegistry) cleanupLoop() {
 			wr.performCleanup()
 
 		case <-wr.ctx.Done():
+			wr.logger.Info("Cleanup loop terminated")
 			return
 		}
 	}
@@ -420,7 +457,7 @@ func (wr *WorkerRegistry) performCleanup() {
 
 	// Update database for dead workers
 	if len(deadWorkers) > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		ctx, cancel := context.WithTimeout(context.Background(), constants.WorkerRegistrationTimeout)
 		defer cancel()
 
 		for _, workerID := range deadWorkers {
@@ -434,10 +471,82 @@ func (wr *WorkerRegistry) performCleanup() {
 	}
 }
 
-// loadWorkersFromDB restores worker state from PostgreSQL
-// This is called on coordinator startup to recover from restarts
+// dbSyncLoop periodically syncs in-memory worker state to the database.
+// This prevents drift between memory and database, ensuring consistency
+// across coordinator restarts.
+func (wr *WorkerRegistry) dbSyncLoop() {
+	defer func() {
+		if r := recover(); r != nil {
+			wr.logger.Error("DB sync loop panic recovered",
+				zap.Any("panic", r),
+				zap.Stack("stack"),
+			)
+			// Restart the loop
+			go wr.dbSyncLoop()
+		}
+	}()
+
+	// Sync to database every 30 seconds
+	ticker := time.NewTicker(constants.WorkerDBSyncInterval)
+	defer ticker.Stop()
+
+	wr.logger.Info("DB sync loop started")
+
+	for {
+		select {
+		case <-ticker.C:
+			wr.syncWorkersToDatabase()
+		case <-wr.ctx.Done():
+			wr.logger.Info("DB sync loop stopped")
+			return
+		}
+	}
+}
+
+// syncWorkersToDatabase writes current worker heartbeats to database.
+func (wr *WorkerRegistry) syncWorkersToDatabase() {
+	wr.mu.RLock()
+	workerSnapshots := make([]*WorkerInfo, 0, len(wr.workers))
+	for _, worker := range wr.workers {
+		// Create a copy for safe database operations
+		snapshot := &WorkerInfo{
+			ID:              worker.ID,
+			Status:          worker.Status,
+			LastHeartbeatAt: worker.LastHeartbeatAt,
+		}
+		workerSnapshots = append(workerSnapshots, snapshot)
+	}
+	wr.mu.RUnlock()
+
+	if len(workerSnapshots) == 0 {
+		return // No workers to sync
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), constants.WorkerHeartbeatUpdateTimeout)
+	defer cancel()
+
+	// Batch update heartbeats
+	for _, worker := range workerSnapshots {
+		// Only sync if worker is active (has recent heartbeat)
+		if worker.Status == WorkerStatusActive {
+			if err := wr.workerRepo.UpdateHeartbeat(ctx, worker.ID); err != nil {
+				wr.logger.Warn("Failed to sync worker heartbeat to database",
+					zap.String("worker_id", worker.ID),
+					zap.Error(err),
+				)
+			}
+		}
+	}
+
+	wr.logger.Debug("Synced worker heartbeats to database",
+		zap.Int("count", len(workerSnapshots)),
+	)
+}
+
+// loadWorkersFromDB restores worker state from PostgreSQL.
+// This is called on coordinator startup to recover from restarts.
 func (wr *WorkerRegistry) loadWorkersFromDB() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(context.Background(), constants.WorkerHeartbeatUpdateTimeout)
 	defer cancel()
 
 	workers, err := wr.workerRepo.GetActiveWorkers(ctx)
