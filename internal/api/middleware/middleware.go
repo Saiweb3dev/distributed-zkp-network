@@ -29,14 +29,14 @@ func Recovery(logger *zap.Logger) func(http.Handler) http.Handler {
 						zap.String("path", r.URL.Path),
 						zap.String("method", r.Method),
 					)
-					
+
 					// Return 500 to client
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusInternalServerError)
-					w.Write([]byte(`{"success": false, "error": "Internal server error"}`))
+					_, _ = w.Write([]byte(`{"success": false, "error": "Internal server error"}`))
 				}
 			}()
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -49,7 +49,7 @@ func Recovery(logger *zap.Logger) func(http.Handler) http.Handler {
 // responseWriter wraps http.ResponseWriter to capture status code
 type responseWriter struct {
 	http.ResponseWriter
-	statusCode int
+	statusCode   int
 	bytesWritten int
 }
 
@@ -69,19 +69,19 @@ func Logging(logger *zap.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			
+
 			// Wrap response writer to capture status
 			wrapped := &responseWriter{
 				ResponseWriter: w,
 				statusCode:     http.StatusOK,
 			}
-			
+
 			// Call next handler
 			next.ServeHTTP(wrapped, r)
-			
+
 			// Log after request completes
 			duration := time.Since(start)
-			
+
 			logger.Info("HTTP request",
 				zap.String("method", r.Method),
 				zap.String("path", r.URL.Path),
@@ -108,13 +108,13 @@ func CORS() func(http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-			
+
 			// Handle preflight requests
 			if r.Method == "OPTIONS" {
 				w.WriteHeader(http.StatusOK)
 				return
 			}
-			
+
 			next.ServeHTTP(w, r)
 		})
 	}
@@ -132,19 +132,19 @@ func Timeout(timeout time.Duration) func(http.Handler) http.Handler {
 			// Create context with timeout
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
-			
+
 			// Clone request with timeout context
 			r = r.WithContext(ctx)
-			
+
 			// Channel to signal completion
 			done := make(chan struct{})
-			
+
 			// Run handler in goroutine
 			go func() {
 				next.ServeHTTP(w, r)
 				close(done)
 			}()
-			
+
 			// Wait for completion or timeout
 			select {
 			case <-done:
@@ -153,7 +153,7 @@ func Timeout(timeout time.Duration) func(http.Handler) http.Handler {
 			case <-ctx.Done():
 				// Timeout occurred
 				w.WriteHeader(http.StatusGatewayTimeout)
-				w.Write([]byte(`{"success": false, "error": "Request timeout"}`))
+				_, _ = w.Write([]byte(`{"success": false, "error": "Request timeout"}`))
 			}
 		})
 	}

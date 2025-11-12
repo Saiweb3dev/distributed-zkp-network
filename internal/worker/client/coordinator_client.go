@@ -13,6 +13,7 @@ import (
 	"time"
 
 	pb "github.com/saiweb3dev/distributed-zkp-network/internal/proto/coordinator"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/constants"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/executor"
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
@@ -62,7 +63,7 @@ func NewCoordinatorClient(
 		coordinatorAddr:    coordinatorAddr,
 		maxConcurrentTasks: maxConcurrentTasks,
 		logger:             logger,
-		taskChan:           make(chan *Task, 10),
+		taskChan:           make(chan *Task, constants.CoordinatorClientTaskChannelBuffer),
 		connected:          false,
 	}, nil
 }
@@ -77,14 +78,14 @@ func (c *CoordinatorClient) Connect(ctx context.Context) error {
 	opts := []grpc.DialOption{
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithKeepaliveParams(keepalive.ClientParameters{
-			Time:                10 * time.Second, // Send keepalive ping every 10s
-			Timeout:             3 * time.Second,  // Wait 3s for ping ack
-			PermitWithoutStream: true,             // Send pings even without active streams
+			Time:                constants.GRPCKeepaliveTime,
+			Timeout:             constants.GRPCKeepaliveTimeout,
+			PermitWithoutStream: constants.GRPCKeepalivePermitWithoutStream,
 		}),
 	}
 
 	// Establish connection with timeout
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, constants.CoordinatorDialTimeout)
 	defer cancel()
 
 	conn, err := grpc.DialContext(dialCtx, c.coordinatorAddr, opts...)
@@ -92,9 +93,33 @@ func (c *CoordinatorClient) Connect(ctx context.Context) error {
 		return fmt.Errorf("failed to connect: %w", err)
 	}
 
+	// Store connection
 	c.mu.Lock()
 	c.conn = conn
 	c.client = pb.NewCoordinatorServiceClient(conn)
+	c.mu.Unlock()
+
+	// Validate connection with test RPC before marking as connected
+	testCtx, testCancel := context.WithTimeout(ctx, constants.CoordinatorConnectionTestTimeout)
+	defer testCancel()
+
+	// Try a heartbeat as connection validation
+	testReq := &pb.HeartbeatRequest{
+		WorkerId:  c.workerID,
+		Timestamp: time.Now().Unix(),
+	}
+
+	if _, err := c.client.SendHeartbeat(testCtx, testReq); err != nil {
+		conn.Close()
+		c.mu.Lock()
+		c.conn = nil
+		c.client = nil
+		c.mu.Unlock()
+		return fmt.Errorf("connection validation failed: %w", err)
+	}
+
+	// Mark as connected only after successful validation
+	c.mu.Lock()
 	c.connected = true
 	c.mu.Unlock()
 
@@ -224,6 +249,41 @@ func (c *CoordinatorClient) ReportCompletion(
 	return nil
 }
 
+// StartTask notifies coordinator that worker is beginning to process a task
+// This transitions the task from 'assigned' to 'in_progress' status
+func (c *CoordinatorClient) StartTask(
+	ctx context.Context,
+	taskID string,
+) error {
+	c.mu.RLock()
+	client := c.client
+	c.mu.RUnlock()
+
+	if client == nil {
+		return fmt.Errorf("not connected to coordinator")
+	}
+
+	req := &pb.StartTaskRequest{
+		TaskId:   taskID,
+		WorkerId: c.workerID,
+	}
+
+	resp, err := client.StartTask(ctx, req)
+	if err != nil {
+		return fmt.Errorf("failed to start task: %w", err)
+	}
+
+	if !resp.Success {
+		return fmt.Errorf("start task rejected: %s", resp.Message)
+	}
+
+	c.logger.Debug("Task started",
+		zap.String("task_id", taskID),
+	)
+
+	return nil
+}
+
 // ReportFailure sends a task failure notification to the coordinator
 func (c *CoordinatorClient) ReportFailure(
 	ctx context.Context,
@@ -271,6 +331,11 @@ func (c *CoordinatorClient) receiveTasksLoop(ctx context.Context) {
 	c.taskStreamCancel = cancel
 	c.mu.Unlock()
 
+	// Exponential backoff for stream reconnection
+	backoff := constants.StreamReconnectInitialBackoff
+	maxBackoff := constants.StreamReconnectMaxBackoff
+	consecutiveFailures := 0
+
 	for {
 		select {
 		case <-streamCtx.Done():
@@ -279,17 +344,30 @@ func (c *CoordinatorClient) receiveTasksLoop(ctx context.Context) {
 		default:
 			// Attempt to establish stream
 			if err := c.receiveTasksStream(streamCtx); err != nil {
+				consecutiveFailures++
+
 				c.logger.Error("Task stream error, retrying",
 					zap.Error(err),
+					zap.Int("consecutive_failures", consecutiveFailures),
+					zap.Duration("backoff", backoff),
 				)
 
-				// Wait before retrying
+				// Wait before retrying with exponential backoff
 				select {
-				case <-time.After(5 * time.Second):
+				case <-time.After(backoff):
+					// Increase backoff exponentially
+					backoff = backoff * 2
+					if backoff > maxBackoff {
+						backoff = maxBackoff
+					}
 					continue
 				case <-streamCtx.Done():
 					return
 				}
+			} else {
+				// Stream ended gracefully - reset backoff
+				consecutiveFailures = 0
+				backoff = constants.StreamReconnectInitialBackoff
 			}
 		}
 	}
@@ -341,16 +419,15 @@ func (c *CoordinatorClient) receiveTasksStream(ctx context.Context) error {
 			zap.String("circuit_type", task.CircuitType),
 		)
 
-		// Send to task channel (non-blocking)
+		// Send to task channel - MUST succeed or abort stream
+		// Blocking is acceptable: if channel is full, worker pool is overloaded
+		// Better to apply backpressure than drop tasks silently
 		select {
 		case c.taskChan <- task:
 			// Task sent successfully
 		case <-ctx.Done():
+			// Stream is shutting down
 			return ctx.Err()
-		default:
-			c.logger.Warn("Task channel full, dropping task",
-				zap.String("task_id", task.ID),
-			)
 		}
 	}
 }
@@ -381,7 +458,7 @@ func (c *CoordinatorClient) Disconnect() {
 
 	// Close connection
 	if c.conn != nil {
-		c.conn.Close()
+		_ = c.conn.Close() // Best effort close
 		c.conn = nil
 	}
 

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/client"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/constants"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/executor"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/zkp"
 	"go.uber.org/zap"
@@ -21,6 +23,7 @@ type Worker struct {
 	id                string
 	coordinatorClient *client.CoordinatorClient
 	workerPool        *executor.WorkerPool
+	eventBus          *events.EventBus
 	logger            *zap.Logger
 
 	heartbeatInterval time.Duration
@@ -35,6 +38,7 @@ type Config struct {
 	Concurrency        int
 	HeartbeatInterval  time.Duration
 	ZKPCurve           string
+	EventBus           *events.EventBus // Optional: for publishing task lifecycle events
 }
 
 // NewWorker creates a worker instance with the specified configuration
@@ -61,10 +65,17 @@ func NewWorker(cfg Config, logger *zap.Logger) (*Worker, error) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Use provided event bus or create disabled one
+	eventBusToUse := cfg.EventBus
+	if eventBusToUse == nil {
+		eventBusToUse = events.NewDisabledEventBus(logger)
+	}
+
 	return &Worker{
 		id:                cfg.WorkerID,
 		coordinatorClient: coordClient,
 		workerPool:        pool,
+		eventBus:          eventBusToUse,
 		logger:            logger,
 		heartbeatInterval: cfg.HeartbeatInterval,
 		ctx:               ctx,
@@ -93,14 +104,44 @@ func (w *Worker) Start() error {
 	// Step 3: Start worker pool
 	w.workerPool.Start()
 
-	// Step 4: Start heartbeat sender
-	go w.heartbeatLoop()
+	// Step 4: Start heartbeat sender with panic recovery
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Error("Heartbeat loop panic - worker may become unresponsive",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+		w.heartbeatLoop()
+	}()
 
-	// Step 5: Start result reporter
-	go w.resultReporterLoop()
+	// Step 5: Start result reporter with panic recovery
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Error("Result reporter loop panic - results may be lost",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+		w.resultReporterLoop()
+	}()
 
-	// Step 6: Start task receiver
-	go w.taskReceiverLoop()
+	// Step 6: Start task receiver with panic recovery
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				w.logger.Error("Task receiver loop panic - no new tasks will be received",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+		w.taskReceiverLoop()
+	}()
 
 	w.logger.Info("Worker started successfully",
 		zap.String("worker_id", w.id),
@@ -140,20 +181,40 @@ func (w *Worker) heartbeatLoop() {
 	for {
 		select {
 		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(w.ctx, time.Second*3)
-
-			if err := w.coordinatorClient.SendHeartbeat(ctx); err != nil {
-				w.logger.Error("Failed to send heartbeat",
-					zap.Error(err),
-				)
-			}
-
-			cancel()
+			w.sendHeartbeatWithRetry()
 
 		case <-w.ctx.Done():
 			w.logger.Info("Heartbeat loop terminated")
 			return
 		}
+	}
+}
+
+// sendHeartbeatWithRetry sends a heartbeat with retry logic
+func (w *Worker) sendHeartbeatWithRetry() {
+	// Use shorter retry config for heartbeats (they happen frequently)
+	cfg := RetryConfig{
+		MaxRetries:  constants.HeartbeatMaxRetries,
+		BaseBackoff: constants.HeartbeatBaseBackoff,
+		MaxBackoff:  constants.HeartbeatMaxBackoff,
+	}
+
+	err := RetryWithBackoff(
+		w.ctx,
+		cfg,
+		w.logger,
+		"send_heartbeat",
+		func(ctx context.Context) error {
+			heartbeatCtx, cancel := context.WithTimeout(ctx, constants.HeartbeatTimeout)
+			defer cancel()
+			return w.coordinatorClient.SendHeartbeat(heartbeatCtx)
+		},
+	)
+
+	if err != nil {
+		w.logger.Error("Failed to send heartbeat after retries - worker may be marked dead",
+			zap.Error(err),
+		)
 	}
 }
 
@@ -194,8 +255,22 @@ func (w *Worker) taskReceiverLoop() {
 				CreatedAt:   task.CreatedAt,
 			}
 
-			// Submit to worker pool
-			ctx, cancel := context.WithTimeout(w.ctx, time.Second*5)
+			// Notify coordinator that we're starting to process this task
+			// This transitions task status from 'assigned' to 'in_progress'
+			startCtx, startCancel := context.WithTimeout(w.ctx, constants.TaskStartTimeout)
+			if err := w.coordinatorClient.StartTask(startCtx, task.ID); err != nil {
+				w.logger.Warn("Failed to notify task start (will still process task)",
+					zap.String("task_id", task.ID),
+					zap.Error(err),
+				)
+				// Don't fail the task - continue processing even if notification fails
+				// The coordinator will accept completion from 'assigned' status temporarily
+			}
+			startCancel()
+
+			// Submit to worker pool with longer timeout
+			// Allows for momentary queue buildup without false failures
+			ctx, cancel := context.WithTimeout(w.ctx, constants.TaskSubmitTimeout)
 			if err := w.workerPool.Submit(ctx, executorTask); err != nil {
 				w.logger.Error("Failed to submit task to pool",
 					zap.String("task_id", task.ID),
@@ -214,6 +289,7 @@ func (w *Worker) taskReceiverLoop() {
 
 // resultReporterLoop monitors the worker pool for completed tasks
 // Results are sent back to the coordinator via gRPC
+// Handles results concurrently to prevent backpressure on worker pool
 func (w *Worker) resultReporterLoop() {
 	resultChan := w.workerPool.Results()
 
@@ -225,11 +301,25 @@ func (w *Worker) resultReporterLoop() {
 				return
 			}
 
-			if result.Success {
-				w.reportTaskSuccess(result)
-			} else {
-				w.reportTaskFailure(result.TaskID, result.Error)
-			}
+			// Handle each result in a goroutine to prevent blocking
+			// This allows multiple results to be reported concurrently
+			go func(r executor.TaskResult) {
+				defer func() {
+					if rec := recover(); rec != nil {
+						w.logger.Error("Panic in result reporter",
+							zap.String("task_id", r.TaskID),
+							zap.Any("panic", rec),
+							zap.Stack("stack"),
+						)
+					}
+				}()
+
+				if r.Success {
+					w.reportTaskSuccess(r)
+				} else {
+					w.reportTaskFailure(r.TaskID, r.Error)
+				}
+			}(result)
 
 		case <-w.ctx.Done():
 			w.logger.Info("Result reporter loop terminated")
@@ -239,38 +329,115 @@ func (w *Worker) resultReporterLoop() {
 }
 
 // reportTaskSuccess sends a successful result back to the coordinator
+// Uses aggressive retry since losing successful proofs is unacceptable
 func (w *Worker) reportTaskSuccess(result executor.TaskResult) {
-	ctx, cancel := context.WithTimeout(w.ctx, time.Second*10)
-	defer cancel()
+	operation := fmt.Sprintf("report_task_completion:%s", result.TaskID)
 
-	if err := w.coordinatorClient.ReportCompletion(ctx, result); err != nil {
-		w.logger.Error("Failed to report task completion",
+	err := RetryWithBackoff(
+		w.ctx,
+		AggressiveRetryConfig(), // 5 retries with exponential backoff
+		w.logger.With(zap.String("task_id", result.TaskID)),
+		operation,
+		func(ctx context.Context) error {
+			reportCtx, cancel := context.WithTimeout(ctx, constants.TaskResultTimeout)
+			defer cancel()
+			return w.coordinatorClient.ReportCompletion(reportCtx, result)
+		},
+	)
+
+	if err != nil {
+		w.logger.Error("Failed to report task completion after all retries - result may be lost",
 			zap.String("task_id", result.TaskID),
 			zap.Error(err),
 		)
-		// TODO: Implement retry logic for result reporting
-	} else {
-		w.logger.Info("Task completion reported",
-			zap.String("task_id", result.TaskID),
-			zap.Duration("duration", result.Duration),
-		)
+		return
 	}
+
+	// Success - log and publish event
+	w.logger.Info("Task completion reported",
+		zap.String("task_id", result.TaskID),
+		zap.Duration("duration", result.Duration),
+	)
+
+	w.publishTaskEvent(events.EventTaskCompleted, result.TaskID, map[string]interface{}{
+		"duration_ms": result.Duration.Milliseconds(),
+	})
 }
 
 // reportTaskFailure sends a failure report to the coordinator
-func (w *Worker) reportTaskFailure(taskID string, err error) {
-	ctx, cancel := context.WithTimeout(w.ctx, time.Second*10)
-	defer cancel()
+// Uses retry logic to ensure coordinator knows about failures
+func (w *Worker) reportTaskFailure(taskID string, taskErr error) {
+	operation := fmt.Sprintf("report_task_failure:%s", taskID)
 
-	if reportErr := w.coordinatorClient.ReportFailure(ctx, taskID, err.Error()); reportErr != nil {
-		w.logger.Error("Failed to report task failure",
+	reportErr := RetryWithBackoff(
+		w.ctx,
+		DefaultRetryConfig(), // 3 retries with exponential backoff
+		w.logger.With(zap.String("task_id", taskID)),
+		operation,
+		func(ctx context.Context) error {
+			reportCtx, cancel := context.WithTimeout(ctx, constants.TaskResultTimeout)
+			defer cancel()
+			return w.coordinatorClient.ReportFailure(reportCtx, taskID, taskErr.Error())
+		},
+	)
+
+	if reportErr != nil {
+		w.logger.Error("Failed to report task failure after all retries",
 			zap.String("task_id", taskID),
 			zap.Error(reportErr),
+			zap.NamedError("original_error", taskErr),
 		)
-	} else {
-		w.logger.Info("Task failure reported",
+		return
+	}
+
+	// Success - log and publish event
+	w.logger.Info("Task failure reported",
+		zap.String("task_id", taskID),
+		zap.Error(taskErr),
+	)
+
+	w.publishTaskEvent(events.EventTaskFailed, taskID, map[string]interface{}{
+		"error": taskErr.Error(),
+	})
+}
+
+// publishTaskEvent publishes task lifecycle events to the event bus
+// Consolidates event publishing logic with consistent error handling
+func (w *Worker) publishTaskEvent(eventType events.EventType, taskID string, extraData map[string]interface{}) {
+	if !w.eventBus.IsEnabled() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), constants.EventPublishTimeout)
+	defer cancel()
+
+	// Base event data
+	data := map[string]interface{}{
+		"task_id":   taskID,
+		"worker_id": w.id,
+	}
+
+	// Merge extra data
+	for k, v := range extraData {
+		data[k] = v
+	}
+
+	event := events.Event{
+		Type:      eventType,
+		Timestamp: time.Now().Unix(),
+		Data:      data,
+	}
+
+	if err := w.eventBus.Publish(ctx, event); err != nil {
+		w.logger.Warn("Failed to publish event",
+			zap.String("event_type", string(eventType)),
 			zap.String("task_id", taskID),
 			zap.Error(err),
+		)
+	} else {
+		w.logger.Debug("Event published",
+			zap.String("event_type", string(eventType)),
+			zap.String("task_id", taskID),
 		)
 	}
 }

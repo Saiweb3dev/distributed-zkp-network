@@ -15,6 +15,9 @@ service CoordinatorService {
     // Heartbeat - called every 5 seconds to signal worker is alive
     rpc SendHeartbeat(HeartbeatRequest) returns (HeartbeatResponse);
     
+    // Start task - called when worker begins processing a task
+    rpc StartTask(StartTaskRequest) returns (StartTaskResponse);
+    
     // Report task completion - called when proof generation succeeds
     rpc ReportCompletion(TaskCompletionRequest) returns (TaskCompletionResponse);
     
@@ -66,6 +69,20 @@ message TaskAssignment {
     string circuit_type = 2;  // "merkle_proof", "range_proof", etc.
     bytes input_data_json = 3;  // JSON-encoded input data
     int64 created_at = 4;  // Unix timestamp
+}
+
+// ============================================================================
+// Task Start
+// ============================================================================
+
+message StartTaskRequest {
+    string task_id = 1;
+    string worker_id = 2;
+}
+
+message StartTaskResponse {
+    bool success = 1;
+    string message = 2;
 }
 
 // ============================================================================

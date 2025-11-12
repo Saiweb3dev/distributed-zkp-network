@@ -1,0 +1,35 @@
+
+coordinator:
+  id: "coordinator-1"
+  grpc_port: 9090
+  http_port: 8090
+  
+  # NEW: Raft configuration
+  raft:
+    node_id: "coordinator-1"
+    raft_port: 7000
+    raft_dir: "/var/lib/zkp/raft"
+    bootstrap: true  # Bootstrap the cluster (ONLY for first node!)
+    
+    # Cluster peers (for bootstrap)
+    peers:
+      - id: "coordinator-1"
+        address: "coordinator-1:7000"
+      - id: "coordinator-2"
+        address: "coordinator-2:7000"
+      - id: "coordinator-3"
+        address: "coordinator-3:7000"
+    
+    # Raft tuning
+    heartbeat_timeout: 1s
+    election_timeout: 1s
+    commit_timeout: 50ms
+    max_append_entries: 64
+    snapshot_interval: 120s
+    snapshot_threshold: 8192
+
+database:
+  # Same database shared by all coordinators
+  host: "postgres"
+  port: 5432
+  database: "zkp_network"

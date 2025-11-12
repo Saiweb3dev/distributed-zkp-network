@@ -16,8 +16,32 @@ database:
   max_idle_conns: 5
   conn_max_lifetime: 5m
 
+redis:
+  host: "redis"             # Docker service name, use "localhost" for local dev
+  port: 6379
+  password: ""              # Leave empty if no auth
+  db: 0                     # Redis database number (0-15)
+  
+  # Connection pool settings
+  max_retries: 3            # Max retry attempts for failed operations
+  pool_size: 10             # Max number of socket connections
+  min_idle_conns: 5         # Minimum idle connections to maintain
+  
+  # Timeout settings
+  dial_timeout: 5s          # Timeout for establishing connection
+  read_timeout: 3s          # Timeout for socket reads
+  write_timeout: 3s         # Timeout for socket writes
+  pool_timeout: 4s          # Timeout when all connections are busy
+  
+  # Feature flags
+  enabled: true             # Enable Redis event bus (set false to use polling only)
+  caching_enabled: true     # Enable caching features (NEW: Phase 14)
+  
+  # Caching configuration
+  default_ttl: 5m           # Default cache expiration time (completed tasks: 30m, failed: 10m)
+
 logging:
-  level: "info"
+  level: "debug"
   format: "json"
   output: "stdout"
 
@@ -32,10 +56,15 @@ zkp:
   compile_cache_size: 100
   max_proof_size_mb: 10
   
+# Add rate limiting config
 rate_limit:
   enabled: true
-  requests_per_second: 100
-  burst: 200
+  requests_per_second: 10.0
+  burst: 20
+  # Optional: whitelist IPs that bypass rate limiting
+  whitelist:
+    - "127.0.0.1"
+    - "::1"
 
 cors:
   enabled: true

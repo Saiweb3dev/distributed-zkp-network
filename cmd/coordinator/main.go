@@ -11,8 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	_ "github.com/lib/pq" // PostgreSQL driver
+	"github.com/hashicorp/raft"
+	_ "github.com/lib/pq"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/constants"
+	coordinatorRaft "github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/raft"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/registry"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/scheduler"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/coordinator/service"
@@ -47,7 +51,16 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync() // Flush any buffered log entries
+	// Ensure all buffered logs are written on shutdown
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			// Ignore common benign errors on stdout/stderr
+			if err.Error() != "sync /dev/stdout: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stderr: inappropriate ioctl for device" {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
 
 	logger.Info("Starting ZKP Coordinator",
 		zap.String("version", version),
@@ -93,13 +106,13 @@ func main() {
 	}
 	defer db.Close()
 
-	// Verify database connectivity with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := db.PingContext(ctx); err != nil {
-		cancel()
+	// Verify database connectivity with ping
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pingCancel()
+
+	if err := db.PingContext(pingCtx); err != nil {
 		logger.Fatal("Database ping failed", zap.Error(err))
 	}
-	cancel()
 
 	logger.Info("Database connection established",
 		zap.Int("max_open_conns", cfg.Database.MaxOpenConns),
@@ -107,25 +120,139 @@ func main() {
 	)
 
 	// ========================================================================
-	// STEP 5: Initialize Data Access Layer (Repositories)
+	// STEP 5: Initialize Redis Event Bus
+	// ========================================================================
+	var eventBus *events.EventBus
+
+	if cfg.Redis.Enabled {
+		logger.Info("Initializing Redis Event Bus",
+			zap.String("host", cfg.Redis.Host),
+			zap.Int("port", cfg.Redis.Port),
+			zap.Bool("caching_enabled", cfg.Redis.CachingEnabled),
+		)
+
+		eventBusConfig := events.EventBusConfig{
+			Host:         cfg.Redis.Host,
+			Port:         cfg.Redis.Port,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			MaxRetries:   cfg.Redis.MaxRetries,
+			PoolSize:     cfg.Redis.PoolSize,
+			MinIdleConns: cfg.Redis.MinIdleConns,
+			DialTimeout:  cfg.Redis.DialTimeout,
+			ReadTimeout:  cfg.Redis.ReadTimeout,
+			WriteTimeout: cfg.Redis.WriteTimeout,
+			Enabled:      cfg.Redis.Enabled,
+		}
+
+		var err error
+		eventBus, err = events.NewEventBus(eventBusConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize event bus, continuing with polling only",
+				zap.Error(err),
+			)
+			eventBus = events.NewDisabledEventBus(logger)
+		} else {
+			logger.Info("Event bus initialized successfully")
+			defer eventBus.Close()
+		}
+	} else {
+		logger.Info("Redis event bus disabled in configuration")
+		eventBus = events.NewDisabledEventBus(logger)
+	}
+
+	// ========================================================================
+	// STEP 6: Initialize Data Access Layer (Repositories)
 	// ========================================================================
 	taskRepo := postgres.NewTaskRepository(db)
 	workerRepo := postgres.NewWorkerRepository(db)
 
 	// ========================================================================
-	// STEP 6: Initialize Worker Registry (Worker State Management)
+	// STEP 6: Initialize Raft Consensus (High Availability & Leader Election)
 	// ========================================================================
-	// The registry tracks all registered workers, their health status,
-	// and available capacity for task assignment
-	logger.Info("Initializing worker registry",
-		zap.Duration("heartbeat_timeout", cfg.Coordinator.HeartbeatTimeout),
+	logger.Info("Initializing Raft consensus",
+		zap.String("node_id", cfg.Coordinator.Raft.NodeID),
+		zap.Int("raft_port", cfg.Coordinator.Raft.RaftPort),
+		zap.String("raft_dir", cfg.Coordinator.Raft.RaftDir),
 	)
 
+	// Create worker registry first (needed by FSM)
 	workerRegistry := registry.NewWorkerRegistry(
 		workerRepo,
 		cfg.Coordinator.HeartbeatTimeout,
 		logger,
-		nil, // gRPC service will be set later (circular dependency resolution)
+		nil, // gRPC service will be set later
+	)
+
+	// Create FSM (Finite State Machine) for Raft
+	fsm := coordinatorRaft.NewCoordinatorFSM(workerRegistry, taskRepo, logger)
+
+	// Create Raft node
+	// Use hostname for advertisable address (required for cluster communication)
+	hostname, err := os.Hostname()
+	if err != nil {
+		logger.Fatal("Failed to get hostname", zap.Error(err))
+	}
+	raftAddr := fmt.Sprintf("%s:%d", hostname, cfg.Coordinator.Raft.RaftPort)
+	raftNode, err := coordinatorRaft.NewRaftNode(
+		cfg.Coordinator.Raft.NodeID,
+		raftAddr,
+		cfg.Coordinator.Raft.RaftDir,
+		fsm,
+		logger,
+	)
+	if err != nil {
+		logger.Fatal("Failed to create Raft node", zap.Error(err))
+	}
+
+	// Bootstrap cluster if this is the first node
+	if cfg.Coordinator.Raft.Bootstrap && len(cfg.Coordinator.Raft.Peers) > 0 {
+		logger.Info("Bootstrapping Raft cluster",
+			zap.Int("peer_count", len(cfg.Coordinator.Raft.Peers)),
+		)
+
+		var servers []raft.Server
+		for _, peer := range cfg.Coordinator.Raft.Peers {
+			servers = append(servers, raft.Server{
+				ID:      raft.ServerID(peer.ID),
+				Address: raft.ServerAddress(peer.Address),
+			})
+		}
+
+		if err := raftNode.Bootstrap(servers); err != nil {
+			// Check if already bootstrapped (not an error)
+			if err == raft.ErrCantBootstrap {
+				logger.Info("Cluster already bootstrapped")
+			} else {
+				logger.Error("Failed to bootstrap cluster", zap.Error(err))
+				// Continue anyway - node can join via AddVoter
+			}
+		} else {
+			logger.Info("Raft cluster bootstrapped successfully")
+		}
+	}
+
+	// Wait for leadership election with timeout and polling
+	logger.Info("Waiting for leadership election...")
+	if err := waitForLeaderElection(raftNode, constants.RaftLeaderElectionTimeout, logger); err != nil {
+		logger.Warn("Leadership election timeout", zap.Error(err))
+		// Continue anyway - node may become leader or join later
+	}
+
+	raftState := raftNode.GetState()
+	logger.Info("Raft node state",
+		zap.String("state", raftState.String()),
+		zap.Bool("is_leader", raftNode.IsLeader()),
+		zap.String("leader", raftNode.GetLeaderAddress()),
+	)
+
+	// ========================================================================
+	// STEP 7: Initialize Worker Registry (Worker State Management)
+	// ========================================================================
+	// The registry tracks all registered workers, their health status,
+	// and available capacity for task assignment
+	logger.Info("Starting worker registry",
+		zap.Duration("heartbeat_timeout", cfg.Coordinator.HeartbeatTimeout),
 	)
 
 	if err := workerRegistry.Start(); err != nil {
@@ -134,18 +261,22 @@ func main() {
 	defer workerRegistry.Stop()
 
 	// ========================================================================
-	// STEP 7: Initialize Task Scheduler (Task Distribution Engine)
+	// STEP 8: Initialize Task Scheduler (Task Distribution Engine)
 	// ========================================================================
 	// The scheduler continuously polls for pending tasks and assigns them
 	// to available workers using a round-robin strategy
+	// ONLY THE RAFT LEADER SCHEDULES TASKS to avoid duplicate assignments
 	logger.Info("Initializing task scheduler",
 		zap.Duration("poll_interval", cfg.Coordinator.PollInterval),
 		zap.Duration("stale_task_timeout", cfg.Coordinator.StaleTaskTimeout),
+		zap.Bool("event_driven_enabled", eventBus.IsEnabled()),
 	)
 
 	taskScheduler := scheduler.NewTaskScheduler(
 		taskRepo,
 		workerRegistry,
+		raftNode,
+		eventBus,
 		cfg.Coordinator.PollInterval,
 		logger,
 	)
@@ -154,7 +285,7 @@ func main() {
 	defer taskScheduler.Stop()
 
 	// ========================================================================
-	// STEP 8: Configure and Start gRPC Server (Worker Communication)
+	// STEP 9: Configure and Start gRPC Server (Worker Communication)
 	// ========================================================================
 	logger.Info("Configuring gRPC server",
 		zap.String("address", cfg.GetGRPCAddress()),
@@ -164,28 +295,29 @@ func main() {
 	grpcOpts := []grpc.ServerOption{
 		// Keepalive settings to detect dead connections
 		grpc.KeepaliveParams(keepalive.ServerParameters{
-			MaxConnectionIdle:     15 * time.Minute, // Close idle connections after 15min
-			MaxConnectionAge:      30 * time.Minute, // Force reconnect after 30min
-			MaxConnectionAgeGrace: 5 * time.Minute,  // Allow 5min for graceful shutdown
-			Time:                  5 * time.Minute,  // Send keepalive ping every 5min
-			Timeout:               20 * time.Second, // Wait 20s for keepalive ack
+			MaxConnectionIdle:     constants.GRPCKeepaliveMaxConnectionIdle,
+			MaxConnectionAge:      constants.GRPCKeepaliveMaxConnectionAge,
+			MaxConnectionAgeGrace: constants.GRPCKeepaliveMaxConnectionAgeGrace,
+			Time:                  constants.GRPCKeepaliveTime,
+			Timeout:               constants.GRPCKeepaliveTimeout,
 		}),
 		// Keepalive enforcement to prevent resource exhaustion
 		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
-			MinTime:             5 * time.Minute, // Minimum time between pings from client
-			PermitWithoutStream: true,            // Allow pings even when no streams active
+			MinTime:             constants.GRPCKeepaliveTime, // Minimum time between pings from client
+			PermitWithoutStream: true,                        // Allow pings even when no streams active
 		}),
-		// Message size limits (10MB for proof data)
-		grpc.MaxRecvMsgSize(10 * 1024 * 1024),
-		grpc.MaxSendMsgSize(10 * 1024 * 1024),
+		// Message size limits for proof data
+		grpc.MaxRecvMsgSize(constants.GRPCMaxRecvMsgSize),
+		grpc.MaxSendMsgSize(constants.GRPCMaxSendMsgSize),
 	}
 
 	grpcServer := grpc.NewServer(grpcOpts...)
 
-	// Create gRPC service implementation
+	// Create gRPC service implementation with Raft support
 	grpcService := service.NewCoordinatorGRPCService(
 		workerRegistry,
 		taskRepo,
+		raftNode,
 		logger,
 	)
 
@@ -205,8 +337,17 @@ func main() {
 		logger.Fatal("Failed to listen on gRPC port", zap.Error(err))
 	}
 
-	// Start gRPC server in background goroutine
+	// Start gRPC server in background goroutine with panic recovery
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("gRPC server panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+
 		logger.Info("gRPC server started", zap.String("address", cfg.GetGRPCAddress()))
 		if err := grpcServer.Serve(lis); err != nil {
 			logger.Error("gRPC server terminated with error", zap.Error(err))
@@ -222,8 +363,8 @@ func main() {
 
 	httpMux := http.NewServeMux()
 
-	// Health check endpoint - returns detailed system status
-	httpMux.HandleFunc("/health", createHealthHandler(cfg, workerRegistry, taskScheduler))
+	// Health check endpoint - returns detailed system status including Raft state
+	httpMux.HandleFunc("/health", createHealthHandler(cfg, workerRegistry, taskScheduler, raftNode))
 
 	// Metrics endpoint - Prometheus-compatible metrics
 	httpMux.HandleFunc("/metrics", createMetricsHandler(workerRegistry))
@@ -239,8 +380,17 @@ func main() {
 		IdleTimeout:  60 * time.Second, // Maximum idle time between requests
 	}
 
-	// Start HTTP server in background goroutine
+	// Start HTTP server in background goroutine with panic recovery
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("HTTP server panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+
 		logger.Info("HTTP server started", zap.String("address", cfg.GetHTTPAddress()))
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("HTTP server terminated with error", zap.Error(err))
@@ -252,7 +402,17 @@ func main() {
 	// ========================================================================
 	// Periodically identifies and reassigns stale tasks (tasks that have been
 	// in-progress too long, indicating worker failure)
-	go startStaleTaskCleanup(cfg, taskScheduler, logger)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Stale task cleanup panic recovered",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+		}()
+		startStaleTaskCleanup(cfg, taskScheduler, logger)
+	}()
 
 	// ========================================================================
 	// STEP 11: Signal Coordinator Ready
@@ -276,16 +436,43 @@ func main() {
 	// ========================================================================
 	// STEP 13: Graceful Shutdown (Clean Resource Cleanup)
 	// ========================================================================
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), constants.GracefulShutdownTimeout)
 	defer shutdownCancel()
+
+	logger.Info("Initiating graceful shutdown sequence")
 
 	// Stop accepting new tasks
 	logger.Info("Stopping task scheduler...")
 	taskScheduler.Stop()
 
+	// Stop gRPC service (closes worker streams)
+	logger.Info("Shutting down gRPC service...")
+	if err := grpcService.Shutdown(); err != nil {
+		logger.Error("gRPC service shutdown failed", zap.Error(err))
+	}
+
+	// Stop Raft node (step down from leadership if leader)
+	logger.Info("Shutting down Raft node...")
+	if err := raftNode.Shutdown(); err != nil {
+		logger.Error("Raft shutdown failed", zap.Error(err))
+	}
+
 	// Stop accepting new gRPC connections and drain existing ones
 	logger.Info("Stopping gRPC server...")
-	grpcServer.GracefulStop()
+	stopped := make(chan struct{})
+	go func() {
+		grpcServer.GracefulStop()
+		close(stopped)
+	}()
+
+	// Wait for graceful stop with timeout
+	select {
+	case <-stopped:
+		logger.Info("gRPC server stopped gracefully")
+	case <-time.After(constants.StreamDrainTimeout):
+		logger.Warn("gRPC server graceful stop timed out, forcing stop")
+		grpcServer.Stop()
+	}
 
 	// Stop HTTP server
 	logger.Info("Stopping HTTP server...")
@@ -297,13 +484,23 @@ func main() {
 	logger.Info("Stopping worker registry...")
 	workerRegistry.Stop()
 
+	// Close event bus
+	if eventBus != nil {
+		logger.Info("Closing event bus...")
+		if err := eventBus.Close(); err != nil {
+			logger.Error("Event bus close failed", zap.Error(err))
+		}
+	}
+
 	// Close database connections
 	logger.Info("Closing database connections...")
 	if err := db.Close(); err != nil {
 		logger.Error("Database close failed", zap.Error(err))
 	}
 
-	logger.Info("Coordinator shutdown complete")
+	logger.Info("Coordinator shutdown complete",
+		zap.String("coordinator_id", cfg.Coordinator.ID),
+	)
 }
 
 // ============================================================================
@@ -315,16 +512,26 @@ func createHealthHandler(
 	cfg *config.CoordinatorConfig,
 	workerRegistry *registry.WorkerRegistry,
 	taskScheduler *scheduler.TaskScheduler,
+	raftNode *coordinatorRaft.RaftNode,
 ) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stats := workerRegistry.GetStats()
 		schedulerMetrics := taskScheduler.GetMetrics()
+		raftState := raftNode.GetState()
+		isLeader := raftNode.IsLeader()
+		leaderAddr := raftNode.GetLeaderAddress()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, `{
 			"status": "healthy",
 			"coordinator_id": "%s",
+			"raft": {
+				"state": "%s",
+				"is_leader": %t,
+				"leader_address": "%s",
+				"node_id": "%s"
+			},
 			"workers": {
 				"total": %d,
 				"active": %d,
@@ -343,6 +550,10 @@ func createHealthHandler(
 			}
 		}`,
 			cfg.Coordinator.ID,
+			raftState.String(),
+			isLeader,
+			leaderAddr,
+			cfg.Coordinator.Raft.NodeID,
 			stats.TotalWorkers,
 			stats.ActiveWorkers,
 			stats.SuspectWorkers,
@@ -438,4 +649,36 @@ func initLogger() (*zap.Logger, error) {
 	config.EncoderConfig.TimeKey = "timestamp"
 	config.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 	return config.Build()
+}
+
+// waitForLeaderElection polls Raft state until a leader is elected or timeout occurs.
+func waitForLeaderElection(
+	raftNode *coordinatorRaft.RaftNode,
+	timeout time.Duration,
+	logger *zap.Logger,
+) error {
+	deadline := time.Now().Add(timeout)
+	pollInterval := constants.RaftLeaderElectionPollInterval
+
+	for time.Now().Before(deadline) {
+		state := raftNode.GetState()
+		leaderAddr := raftNode.GetLeaderAddress()
+
+		// Leader elected (either this node or another)
+		if state == raft.Leader || leaderAddr != "" {
+			logger.Info("Leader elected",
+				zap.String("state", state.String()),
+				zap.String("leader", leaderAddr),
+			)
+			return nil
+		}
+
+		logger.Debug("Waiting for leader election",
+			zap.String("state", state.String()),
+		)
+
+		time.Sleep(pollInterval)
+	}
+
+	return fmt.Errorf("leadership election timeout after %v", timeout)
 }

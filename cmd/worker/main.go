@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/constants"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -24,9 +26,6 @@ import (
 const (
 	// Version information for tracking worker deployments
 	version = "1.0.0"
-
-	// Default timeouts for graceful shutdown
-	shutdownTimeout = 30 * time.Second
 )
 
 func main() {
@@ -58,7 +57,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync() // Flush buffered logs on exit
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			// Ignore benign errors on stdout/stderr sync
+			if err.Error() != "sync /dev/stdout: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stderr: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stdout: The handle is invalid." &&
+				err.Error() != "sync /dev/stderr: The handle is invalid." {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
 
 	logger.Info("Starting ZKP Worker Node",
 		zap.String("version", version),
@@ -98,6 +107,45 @@ func main() {
 		zap.String("zkp_curve", cfg.ZKP.Curve),
 	)
 
+	var eventBus *events.EventBus
+
+	if cfg.Redis.Enabled {
+		logger.Info("Initializing Redis Event Bus",
+			zap.String("host", cfg.Redis.Host),
+			zap.Int("port", cfg.Redis.Port),
+			zap.Bool("caching_enabled", cfg.Redis.CachingEnabled),
+		)
+
+		eventBusConfig := events.EventBusConfig{
+			Host:         cfg.Redis.Host,
+			Port:         cfg.Redis.Port,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			MaxRetries:   cfg.Redis.MaxRetries,
+			PoolSize:     cfg.Redis.PoolSize,
+			MinIdleConns: cfg.Redis.MinIdleConns,
+			DialTimeout:  cfg.Redis.DialTimeout,
+			ReadTimeout:  cfg.Redis.ReadTimeout,
+			WriteTimeout: cfg.Redis.WriteTimeout,
+			Enabled:      cfg.Redis.Enabled,
+		}
+		var err error
+		eventBus, err = events.NewEventBus(eventBusConfig, logger)
+		if err != nil {
+			logger.Warn("Failed to initialize event bus, continuing without events",
+				zap.Error(err),
+			)
+			// Create disabled event bus for graceful degradation
+			eventBus = events.NewDisabledEventBus(logger)
+		} else {
+			logger.Info("Event bus initialized successfully")
+			defer eventBus.Close()
+		}
+	} else {
+		logger.Info("Redis event bus disabled in configuration")
+		eventBus = events.NewDisabledEventBus(logger)
+	}
+
 	// ========================================================================
 	// STEP 4: Initialize Worker Instance
 	// ========================================================================
@@ -113,6 +161,7 @@ func main() {
 		Concurrency:        cfg.Worker.Concurrency,
 		HeartbeatInterval:  cfg.Worker.HeartbeatInterval,
 		ZKPCurve:           cfg.ZKP.Curve,
+		EventBus:           eventBus,
 	}
 
 	w, err := worker.NewWorker(workerCfg, logger)
@@ -181,18 +230,26 @@ func main() {
 	// 4. Close gRPC connection to coordinator
 	// 5. Release all resources (memory, goroutines)
 	logger.Info("Initiating graceful shutdown",
-		zap.Duration("timeout", shutdownTimeout),
+		zap.Duration("timeout", constants.ShutdownTimeout),
 	)
 
 	// Create shutdown context with timeout
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), constants.ShutdownTimeout)
 	defer shutdownCancel()
 
-	// Stop worker gracefully
+	// Stop worker gracefully with panic recovery
 	shutdownComplete := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Panic during shutdown sequence",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+			close(shutdownComplete)
+		}()
 		w.Stop()
-		close(shutdownComplete)
 	}()
 
 	// Wait for shutdown to complete or timeout
@@ -203,7 +260,7 @@ func main() {
 		)
 	case <-shutdownCtx.Done():
 		logger.Warn("Shutdown timeout exceeded, forcing termination",
-			zap.Duration("timeout", shutdownTimeout),
+			zap.Duration("timeout", constants.ShutdownTimeout),
 		)
 	}
 

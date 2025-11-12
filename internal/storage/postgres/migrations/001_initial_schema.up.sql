@@ -251,6 +251,32 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+END;
+$$ LANGUAGE plpgsql;
+
+-- Function to start a task (transition from assigned to in_progress)
+CREATE OR REPLACE FUNCTION start_task(
+    p_task_id UUID,
+    p_worker_id VARCHAR(255)
+) RETURNS BOOLEAN AS $$
+DECLARE
+    v_success BOOLEAN;
+BEGIN
+    -- Update task to in_progress
+    UPDATE tasks 
+    SET 
+        status = 'in_progress',
+        started_at = NOW()
+    WHERE 
+        id = p_task_id 
+        AND status = 'assigned'
+        AND worker_id = p_worker_id  -- Ensure task is assigned to this worker
+    RETURNING TRUE INTO v_success;
+    
+    RETURN COALESCE(v_success, FALSE);
+END;
+$$ LANGUAGE plpgsql;
+
 -- Function to complete a task
 CREATE OR REPLACE FUNCTION complete_task(
     p_task_id UUID,
