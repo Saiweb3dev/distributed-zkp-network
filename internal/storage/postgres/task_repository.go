@@ -41,6 +41,7 @@ type TaskRepository interface {
 	GetPendingTasks(ctx context.Context, limit int) ([]*Task, error)
 	GetStaleTasks(ctx context.Context, staleThreshold time.Duration) ([]*Task, error)
 	AssignTask(ctx context.Context, taskID, workerID string) error
+	StartTask(ctx context.Context, taskID, workerID string) error
 	UnassignTask(ctx context.Context, taskID string) error
 	UpdateTaskStatus(ctx context.Context, taskID, status string) error
 	CompleteTask(ctx context.Context, taskID string, proofData []byte, metadata map[string]interface{}, merkleRoot string) error
@@ -265,6 +266,23 @@ func (r *taskRepository) AssignTask(ctx context.Context, taskID, workerID string
 
 	if !success {
 		return fmt.Errorf("task assignment failed (task may not be pending)")
+	}
+
+	return nil
+}
+
+// StartTask transitions a task from assigned to in_progress
+func (r *taskRepository) StartTask(ctx context.Context, taskID, workerID string) error {
+	query := `SELECT start_task($1, $2)`
+
+	var success bool
+	err := r.db.QueryRowContext(ctx, query, taskID, workerID).Scan(&success)
+	if err != nil {
+		return fmt.Errorf("failed to start task: %w", err)
+	}
+
+	if !success {
+		return fmt.Errorf("task start failed (task may not be assigned to this worker)")
 	}
 
 	return nil

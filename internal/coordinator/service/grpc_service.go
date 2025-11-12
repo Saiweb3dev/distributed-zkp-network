@@ -291,6 +291,43 @@ func (s *CoordinatorGRPCService) SendHeartbeat(
 	return &pb.HeartbeatResponse{Success: true}, nil
 }
 
+// StartTask handles worker acknowledgement when it begins processing a task.
+// Transitions task status from 'assigned' to 'in_progress'.
+// This provides accurate state tracking and audit trail.
+func (s *CoordinatorGRPCService) StartTask(
+	ctx context.Context,
+	req *pb.StartTaskRequest,
+) (*pb.StartTaskResponse, error) {
+	s.logger.Info("Task start acknowledged",
+		zap.String("task_id", req.TaskId),
+		zap.String("worker_id", req.WorkerId),
+	)
+
+	// Update task status to in_progress
+	err := s.taskRepo.StartTask(ctx, req.TaskId, req.WorkerId)
+	if err != nil {
+		s.logger.Error("Failed to start task",
+			zap.String("task_id", req.TaskId),
+			zap.String("worker_id", req.WorkerId),
+			zap.Error(err),
+		)
+		return &pb.StartTaskResponse{
+			Success: false,
+			Message: fmt.Sprintf("Failed to start task: %v", err),
+		}, nil
+	}
+
+	s.logger.Info("Task status updated to in_progress",
+		zap.String("task_id", req.TaskId),
+		zap.String("worker_id", req.WorkerId),
+	)
+
+	return &pb.StartTaskResponse{
+		Success: true,
+		Message: "Task started successfully",
+	}, nil
+}
+
 // ReportCompletion handles successful task completion notifications.
 // Worker sends this when it finishes generating a proof.
 // Implements idempotency to handle duplicate completion reports safely.
