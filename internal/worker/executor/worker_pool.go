@@ -162,8 +162,9 @@ func (wp *WorkerPool) worker(id int) {
 		wp.activeWorkers--
 		wp.mu.Unlock()
 
-		// Send result with timeout to prevent blocking
-		ctx, cancel := context.WithTimeout(wp.ctx, 5*time.Second)
+		// Send result - MUST succeed or worker pool is broken
+		// No timeout because losing results is unacceptable
+		// If channel is full, either consumer is dead (shutdown) or too slow
 		select {
 		case wp.results <- result:
 			wp.logger.Info("Task completed",
@@ -172,12 +173,13 @@ func (wp *WorkerPool) worker(id int) {
 				zap.Bool("success", result.Success),
 				zap.Duration("duration", result.Duration),
 			)
-		case <-ctx.Done():
-			wp.logger.Error("Failed to send result, channel blocked",
+		case <-wp.ctx.Done():
+			// Only acceptable reason: worker pool is shutting down
+			wp.logger.Warn("Result not sent due to shutdown",
 				zap.String("task_id", result.TaskID),
 			)
+			return
 		}
-		cancel()
 	}
 
 	wp.logger.Info("Worker stopped",

@@ -18,6 +18,7 @@ import (
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/config"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/common/events"
 	"github.com/saiweb3dev/distributed-zkp-network/internal/worker"
+	"github.com/saiweb3dev/distributed-zkp-network/internal/worker/constants"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -25,9 +26,6 @@ import (
 const (
 	// Version information for tracking worker deployments
 	version = "1.0.0"
-
-	// Default timeouts for graceful shutdown
-	shutdownTimeout = 30 * time.Second
 )
 
 func main() {
@@ -59,7 +57,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "Failed to initialize logger: %v\n", err)
 		os.Exit(1)
 	}
-	defer logger.Sync() // Flush buffered logs on exit
+	defer func() {
+		if err := logger.Sync(); err != nil {
+			// Ignore benign errors on stdout/stderr sync
+			if err.Error() != "sync /dev/stdout: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stderr: inappropriate ioctl for device" &&
+				err.Error() != "sync /dev/stdout: The handle is invalid." &&
+				err.Error() != "sync /dev/stderr: The handle is invalid." {
+				fmt.Fprintf(os.Stderr, "Failed to sync logger: %v\n", err)
+			}
+		}
+	}()
 
 	logger.Info("Starting ZKP Worker Node",
 		zap.String("version", version),
@@ -222,18 +230,26 @@ func main() {
 	// 4. Close gRPC connection to coordinator
 	// 5. Release all resources (memory, goroutines)
 	logger.Info("Initiating graceful shutdown",
-		zap.Duration("timeout", shutdownTimeout),
+		zap.Duration("timeout", constants.ShutdownTimeout),
 	)
 
 	// Create shutdown context with timeout
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), constants.ShutdownTimeout)
 	defer shutdownCancel()
 
-	// Stop worker gracefully
+	// Stop worker gracefully with panic recovery
 	shutdownComplete := make(chan struct{})
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("Panic during shutdown sequence",
+					zap.Any("panic", r),
+					zap.Stack("stack"),
+				)
+			}
+			close(shutdownComplete)
+		}()
 		w.Stop()
-		close(shutdownComplete)
 	}()
 
 	// Wait for shutdown to complete or timeout
@@ -244,7 +260,7 @@ func main() {
 		)
 	case <-shutdownCtx.Done():
 		logger.Warn("Shutdown timeout exceeded, forcing termination",
-			zap.Duration("timeout", shutdownTimeout),
+			zap.Duration("timeout", constants.ShutdownTimeout),
 		)
 	}
 
